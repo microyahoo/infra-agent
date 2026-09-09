@@ -1,13 +1,10 @@
-package storage
+package executor
 
 import (
 	"context"
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/microyahoo/infra-agent/pkg/common"
-	"github.com/microyahoo/infra-agent/pkg/executor/ssh"
 )
 
 // StorageServerInfo 存储服务器信息
@@ -21,20 +18,20 @@ type StorageServerInfo struct {
 
 // StorageCommandExecutor 存储服务器命令执行器
 type StorageCommandExecutor struct {
-	sshExecutor *ssh.SSHExecutor
+	sshExecutor *SSHExecutor
 	serverInfo  *StorageServerInfo
 }
 
 // NewStorageCommandExecutor 创建存储命令执行器
 func NewStorageCommandExecutor(serverInfo *StorageServerInfo) (*StorageCommandExecutor, error) {
-	sshConfig := &ssh.SSHConfig{
+	sshConfig := &SSHConfig{
 		Host:     serverInfo.Host,
 		Port:     serverInfo.Port,
 		User:     serverInfo.User,
 		Password: serverInfo.Password,
 	}
 
-	sshExec, err := ssh.NewSSHExecutor(sshConfig)
+	sshExec, err := NewSSHExecutor(sshConfig)
 	if err != nil {
 		return nil, err
 	}
