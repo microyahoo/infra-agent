@@ -1,0 +1,181 @@
+# Infra Agent 默认配置文件
+
+# Kubernetes 配置
+kubernetes:
+  # kubeconfig 文件路径，留空则使用默认路径
+  kubeconfig: ""
+  # 默认命名空间，留空则监控所有命名空间
+  namespace: ""
+  # 超时时间（秒）
+  timeout: 30
+
+# 分析器配置
+analyzers:
+  # 启用的分析器列表
+  enabled:
+    - pod
+    - pvc
+    - service
+    - deployment
+    - statefulset
+    - node
+    - storage
+    - network
+
+  # 分析器特定配置
+  pod:
+    # 重启次数阈值
+    restartThreshold: 5
+    # 检查资源限制
+    checkResourceLimits: true
+
+  storage:
+    # 磁盘使用率阈值（百分比）
+    diskUsageThreshold: 80
+    # I/O 延迟阈值（毫秒）
+    ioLatencyThreshold: 100
+
+  node:
+    # CPU 使用率阈值（百分比）
+    cpuThreshold: 80
+    # 内存使用率阈值（百分比）
+    memoryThreshold: 85
+    # 磁盘使用率阈值（百分比）
+    diskThreshold: 80
+
+# AI 配置
+ai:
+  # 默认 AI 提供商：openai, anthropic, qwen, etc.
+  provider: "openai"
+
+  # 是否启用 AI 解释
+  enabled: true
+
+  # 是否启用数据脱敏
+  anonymize: true
+
+  # OpenAI 配置
+  openai:
+    apiKey: "${OPENAI_API_KEY}"
+    model: "gpt-4"
+    baseURL: "https://api.openai.com/v1"
+    temperature: 0.7
+    maxTokens: 2000
+
+  # Anthropic 配置
+  anthropic:
+    apiKey: "${ANTHROPIC_API_KEY}"
+    model: "claude-3-sonnet-20240229"
+    baseURL: "https://api.anthropic.com"
+    maxTokens: 2000
+
+  # 国内模型配置（通义千问）
+  qwen:
+    apiKey: "${QWEN_API_KEY}"
+    model: "qwen-max"
+    baseURL: "https://dashscope.aliyuncs.com/api/v1"
+
+# 巡检配置
+patrol:
+  # 是否启用定时巡检
+  enabled: false
+
+  # 巡检间隔（分钟）
+  interval: 30
+
+  # 巡检规则
+  rules:
+    # 检查 Pod 健康状态
+    - name: "pod-health"
+      enabled: true
+      severity: "high"
+
+    # 检查存储容量
+    - name: "storage-capacity"
+      enabled: true
+      severity: "critical"
+
+    # 检查节点资源
+    - name: "node-resources"
+      enabled: true
+      severity: "high"
+
+    # 检查网络连通性
+    - name: "network-connectivity"
+      enabled: true
+      severity: "medium"
+
+# 通知配置
+notifiers:
+  # 默认通知渠道
+  default: "feishu"
+
+  # 飞书配置
+  feishu:
+    enabled: true
+    webhookURL: "${FEISHU_WEBHOOK_URL}"
+    secret: "${FEISHU_SECRET}" # 可选，用于签名验证
+
+# 自动诊断配置
+diagnosis:
+  # 是否启用自动诊断
+  enabled: true
+
+  # 是否自动在 Pod 中执行诊断命令
+  autoExecuteCommands: true
+
+  # 命令执行超时（秒）
+  commandTimeout: 30
+
+  # 日志收集行数
+  logLines: 200
+
+  # 是否收集之前的日志（Pod 重启前）
+  collectPreviousLogs: true
+
+# 数据存储配置
+storage:
+  # 缓存配置
+  cache:
+    enabled: true
+    type: "memory" # memory, redis
+    ttl: 3600 # 缓存过期时间（秒）
+
+  # 历史记录配置
+  history:
+    enabled: true
+    type: "file" # file, database
+    path: "/var/lib/infra-agent/history"
+    retention: 7 # 保留天数
+
+# 日志配置
+logging:
+  level: "info" # debug, info, warn, error
+  format: "json" # json, text
+  output: "stdout" # stdout, file
+  file:
+    path: "/var/log/infra-agent/agent.log"
+    maxSize: 100 # MB
+    maxBackups: 3
+    maxAge: 7 # days
+
+# 服务器模式配置
+server:
+  # HTTP 服务端口
+  port: 8080
+
+  # 指标服务端口
+  metricsPort: 8081
+
+  # 是否启用 TLS
+  tls:
+    enabled: false
+    certFile: ""
+    keyFile: ""
+
+  # 是否启用认证
+  auth:
+    enabled: false
+    type: "basic" # basic, jwt
+    username: "admin"
+    password: "changeme"
