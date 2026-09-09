@@ -8,7 +8,6 @@ import (
 	"github.com/microyahoo/infra-agent/pkg/analyzer"
 	"github.com/microyahoo/infra-agent/pkg/common"
 	"github.com/microyahoo/infra-agent/pkg/executor"
-	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
