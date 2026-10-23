@@ -1,16 +1,304 @@
 package access
 
-import "golang.org/x/crypto/ssh"
+import (
+	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+)
+
+// executor 是执行层的可替换实现，测试时注入假实现。
+type executor func(ctx context.Context, node string, argv []string) (Output, error)
 
 // Cluster 是接入层对外的唯一入口。
-// 本任务只提供构造与连接骨架；命令执行、能力探测、拓扑发现在后续任务中补齐。
+// 工具层只与此类型交互：策略校验、路由、带超时执行、错误分类、输出截断，
+// 以及能力与拓扑的按需缓存都在这里完成。
 type Cluster struct {
-	conn    *clusterConn
-	clients map[string]*ssh.Client
+	conn     *clusterConn
+	nodes    map[string]bool
+	caps     map[string]Capabilities
+	executor executor
+	topo     *Topology
+	clients  map[string]*ssh.Client
+
+	// toolboxPod / monContainer 缓存容器路由需要定位的目标，避免每次命令都查一遍。
+	toolboxPod   string
+	monContainer string
 }
 
 func newCluster(cc *clusterConn) *Cluster {
-	return &Cluster{conn: cc, clients: map[string]*ssh.Client{}}
+	c := &Cluster{
+		conn:    cc,
+		nodes:   map[string]bool{cc.cfg.Host: true},
+		caps:    map[string]Capabilities{},
+		clients: map[string]*ssh.Client{},
+	}
+	c.executor = c.realExecute
+	return c
+}
+
+// setExecutor 替换执行层，仅用于测试注入。
+func (c *Cluster) setExecutor(e executor) { c.executor = e }
+
+// Run 在指定节点上执行一条只读命令。
+// 顺序：原始 argv 过策略 → 校验节点 → 路由（必要时改写为容器 exec）
+// → 执行 → 截断输出 → 回填 Node/Command。
+func (c *Cluster) Run(ctx context.Context, node string, argv []string) (Output, error) {
+	// 策略只校验工具「想做什么」，路由改写后的 argv 在 realExecute 中会再校验一次。
+	if err := c.conn.cfg.Policy.Check(argv); err != nil {
+		return Output{}, &ToolError{Kind: KindFailed, Message: err.Error()}
+	}
+	if !c.nodes[node] {
+		return Output{}, unavailable("未知节点 %q", node)
+	}
+	out, err := c.executor(ctx, node, argv)
+	if err != nil {
+		// 执行层可能只返回原始错误（例如注入的假实现），这里统一补一次语义分类。
+		// 已是 *ToolError 的错误（超时/策略等）保持原样。
+		var te *ToolError
+		if !errors.As(err, &te) {
+			err = classifyError(err, out.Stderr, out.ExitCode)
+		}
+		return out, err
+	}
+	out.Node = node
+	out.Command = BuildCommand(argv)
+	if trunc, did := truncateOutput(out.Stdout, c.conn.cfg.MaxOutputBytes); did {
+		out.Stdout = trunc
+		out.Truncated = true
+	}
+	return out, nil
+}
+
+// realExecute 先做路由改写，再通过链式 SSH 执行。
+// 超时覆盖「定位容器/pod + 命令本身」的整个过程。
+func (c *Cluster) realExecute(ctx context.Context, node string, argv []string) (Output, error) {
+	timeout := c.conn.cfg.CommandTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	// 整个改写 + 执行共享同一个超时预算
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	finalArgv, err := c.rewrite(ctx, node, argv)
+	if err != nil {
+		return Output{}, err
+	}
+	// 改写后的 argv 同样必须通过策略（kubectl exec / crictl exec 均在白名单内）
+	if err := c.conn.cfg.Policy.Check(finalArgv); err != nil {
+		return Output{}, &ToolError{Kind: KindFailed, Message: err.Error()}
+	}
+	return c.execSSH(ctx, node, BuildCommand(finalArgv))
+}
+
+// execSSH 在已解析的节点上跑一条命令串。
+func (c *Cluster) execSSH(ctx context.Context, node, cmd string) (Output, error) {
+	client, err := c.clientFor(ctx, node)
+	if err != nil {
+		return Output{}, classifyError(err, "", 0)
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		return Output{}, classifyError(err, "", 0)
+	}
+	defer session.Close()
+
+	var stdout, stderr strings.Builder
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- session.Run(cmd) }()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		return Output{}, &ToolError{Kind: KindTimeout, Message: "命令在时限内未返回，通常意味着对应组件无响应"}
+	case err := <-done:
+		out := Output{
+			Stdout:   stdout.String(),
+			Stderr:   stderr.String(),
+			Duration: time.Since(start),
+			Node:     node,
+			Command:  cmd,
+		}
+		if err != nil {
+			var exitErr *ssh.ExitError
+			if errors.As(err, &exitErr) {
+				out.ExitCode = exitErr.ExitStatus()
+				return out, classifyError(nil, out.Stderr, out.ExitCode)
+			}
+			return out, classifyError(err, out.Stderr, 0)
+		}
+		return out, nil
+	}
+}
+
+// rewrite 根据节点的能力决定命令到底在哪里执行。
+//
+//	host-ceph     → 原样在宿主机执行
+//	log-only      → 返回 unavailable，让模型改走日志工具
+//	toolbox       → kubectl -n rook-ceph exec <pod> -- <argv...>
+//	container-exec→ crictl|docker exec <容器ID> <argv...>
+//
+// 只有 ceph CLI 需要被改写；iostat、tail、ls 等宿主机工具始终在宿主机执行。
+func (c *Cluster) rewrite(ctx context.Context, node string, argv []string) ([]string, error) {
+	if len(argv) == 0 || argv[0] != "ceph" {
+		return argv, nil
+	}
+
+	caps := c.Capabilities(ctx, node)
+	switch caps.Backend {
+	case "host-ceph":
+		return argv, nil
+	case "toolbox":
+		pod, err := c.toolboxPodName(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+		rewritten := append([]string{"kubectl", "-n", "rook-ceph", "exec", pod, "--"}, argv...)
+		return rewritten, nil
+	case "container-exec":
+		id, err := c.monContainerID(ctx, node, caps.ContainerRT)
+		if err != nil {
+			return nil, err
+		}
+		rewritten := append([]string{caps.ContainerRT, "exec", id}, argv...)
+		return rewritten, nil
+	default:
+		return nil, unavailable("节点 %q 无法执行 ceph 命令（后端 %q），请改用日志类工具", node, caps.Backend)
+	}
+}
+
+// toolboxPodName 查找并缓存 rook toolbox pod 名。
+func (c *Cluster) toolboxPodName(ctx context.Context, node string) (string, error) {
+	if c.toolboxPod != "" {
+		return c.toolboxPod, nil
+	}
+	argv := []string{"kubectl", "-n", "rook-ceph", "get", "pod",
+		"-l", "app=rook-ceph-tools", "-o", "jsonpath={.items[0].metadata.name}"}
+	out, err := c.Run(ctx, node, argv)
+	if err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(out.Stdout)
+	if name == "" {
+		return "", unavailable("节点 %q 上未找到 rook-ceph-tools pod", node)
+	}
+	c.toolboxPod = name
+	return name, nil
+}
+
+// monContainerID 查找并缓存 mon 容器 ID，供 crictl/docker exec 使用。
+func (c *Cluster) monContainerID(ctx context.Context, node, rt string) (string, error) {
+	if c.monContainer != "" {
+		return c.monContainer, nil
+	}
+	var argv []string
+	switch rt {
+	case "crictl":
+		argv = []string{"crictl", "ps", "--name", "rook-ceph-mon", "-q"}
+	case "docker":
+		argv = []string{"docker", "ps", "--filter", "name=rook-ceph-mon", "-q"}
+	default:
+		return "", unavailable("节点 %q 的容器运行时 %q 不受支持", node, rt)
+	}
+	out, err := c.Run(ctx, node, argv)
+	if err != nil {
+		return "", err
+	}
+	// 可能有多个 mon 容器，取第一行即可（任一 mon 都能回答集群级查询）
+	id := parseFirstLine(out.Stdout)
+	if id == "" {
+		return "", unavailable("节点 %q 上未找到 rook-ceph-mon 容器", node)
+	}
+	c.monContainer = id
+	return id, nil
+}
+
+// parseFirstLine 取输出中第一个非空行。
+func parseFirstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if l := strings.TrimSpace(line); l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+func (c *Cluster) clientFor(ctx context.Context, node string) (*ssh.Client, error) {
+	if cl, ok := c.clients[node]; ok {
+		return cl, nil
+	}
+	cl, err := c.conn.dialNode(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	c.clients[node] = cl
+	return cl, nil
+}
+
+// Capabilities 返回节点的能力，结果按节点缓存。
+func (c *Cluster) Capabilities(ctx context.Context, node string) Capabilities {
+	if caps, ok := c.caps[node]; ok {
+		return caps
+	}
+	tr := &clusterTransport{cluster: c, node: node}
+	caps := probeCapabilities(ctx, tr)
+	c.caps[node] = caps
+	return caps
+}
+
+// Topology 返回集群拓扑，首次调用时发现并缓存。
+// 以入口节点为数据源，发现到的节点全部登记，之后其余节点即可直接 Run。
+func (c *Cluster) Topology(ctx context.Context) (*Topology, error) {
+	if c.topo != nil {
+		return c.topo, nil
+	}
+	entry := c.conn.cfg.Host
+
+	// 先取 fsid，失败则不阻塞拓扑（置空即可）
+	var fsid string
+	if out, err := c.Run(ctx, entry, []string{"ceph", "fsid"}); err == nil {
+		fsid = strings.TrimSpace(out.Stdout)
+	}
+
+	out, err := c.Run(ctx, entry, []string{"ceph", "osd", "tree", "-f", "json"})
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := parseOSDTree(out.Stdout)
+	if err != nil {
+		return nil, err
+	}
+
+	tr := &clusterTransport{cluster: c, node: entry}
+	topo := buildTopology(ctx, tr, fsid, nodes)
+
+	for _, n := range topo.Nodes {
+		c.nodes[n.Name] = true
+	}
+	c.topo = &topo
+	return c.topo, nil
+}
+
+// Nodes 返回已知节点列表（入口节点在前），顺序稳定便于展示。
+func (c *Cluster) Nodes() []string {
+	out := make([]string, 0, len(c.nodes))
+	if c.conn.cfg.Host != "" && c.nodes[c.conn.cfg.Host] {
+		out = append(out, c.conn.cfg.Host)
+	}
+	for n := range c.nodes {
+		if n != c.conn.cfg.Host {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // Close 关闭所有派生连接以及入口连接。
@@ -21,4 +309,20 @@ func (c *Cluster) Close() error {
 		}
 	}
 	return c.conn.Close()
+}
+
+// clusterTransport 把 Cluster 适配成探测/拓扑用的 transport。
+// 探测命令的失败在探测层按退出码处理，因此这里把错误统一折算为非零退出码。
+// 它直接调用 executor 而非 Run：避免探测过程中绕过测试注入的执行层。
+type clusterTransport struct {
+	cluster *Cluster
+	node    string
+}
+
+func (t *clusterTransport) exec(ctx context.Context, argv []string) (string, string, int) {
+	out, err := t.cluster.executor(ctx, t.node, argv)
+	if err != nil {
+		return out.Stdout, out.Stderr, 1
+	}
+	return out.Stdout, out.Stderr, out.ExitCode
 }
