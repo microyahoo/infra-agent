@@ -45,16 +45,36 @@ func (t *osdTreeTool) Schema() json.RawMessage {
 }
 
 type rawOSDDF struct {
-	Nodes []struct {
-		ID          int     `json:"id"`
-		Name        string  `json:"name"`
-		Type        string  `json:"type"`
-		Status      string  `json:"status"`
-		DeviceClass string  `json:"device_class"`
-		Utilization float64 `json:"utilization"`
-		Var         float64 `json:"var"`
-		PGs         int     `json:"pgs"`
-	} `json:"nodes"`
+	Nodes []rawOSDDFNode `json:"nodes"`
+}
+
+// rawOSDDFNode 兼容不同 Ceph 版本的 ceph osd df 输出。
+//
+// 实测（Reef/Quincy）：使用率并非总能直接读到 utilization 字段，
+// 有时只有 kb / kb_used，需要自行计算。这里两路都收，取值时兜底。
+type rawOSDDFNode struct {
+	ID          int     `json:"id"`
+	Name        string  `json:"name"`
+	Type        string  `json:"type"`
+	Status      string  `json:"status"`
+	DeviceClass string  `json:"device_class"`
+	Utilization float64 `json:"utilization"`
+	Var         float64 `json:"var"`
+	PGs         int     `json:"pgs"`
+	KB          float64 `json:"kb"`
+	KBUsed      float64 `json:"kb_used"`
+}
+
+// utilization 返回该 OSD 的使用率（百分比）。
+// 优先用现成的 utilization 字段，缺失时由 kb_used/kb 计算。
+func (n rawOSDDFNode) utilization() float64 {
+	if n.Utilization > 0 {
+		return n.Utilization
+	}
+	if n.KB > 0 {
+		return n.KBUsed / n.KB * 100
+	}
+	return 0
 }
 
 func (t *osdTreeTool) Execute(ctx context.Context, _ json.RawMessage) (*Result, *Raw, error) {
@@ -89,15 +109,16 @@ func (t *osdTreeTool) Execute(ctx context.Context, _ json.RawMessage) (*Result, 
 		if n.Type != "osd" {
 			continue
 		}
+		util := n.utilization()
 		info := OSDInfo{
 			ID: n.ID, Status: n.Status, DeviceClass: n.DeviceClass,
-			Utilization: n.Utilization, Var: n.Var, PGs: n.PGs,
+			Utilization: util, Var: n.Var, PGs: n.PGs,
 		}
 		if p, ok := place[n.ID]; ok {
 			info.Host, info.Device = p.host, p.dev
 		}
 		d.OSDs = append(d.OSDs, info)
-		sumUtil += n.Utilization
+		sumUtil += util
 		if n.Status != "up" {
 			d.DownOSDs = append(d.DownOSDs, info)
 		}

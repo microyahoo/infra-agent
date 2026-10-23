@@ -95,3 +95,24 @@ func TestOSDTreeMapsDeviceFromTopology(t *testing.T) {
 		}
 	}
 }
+
+// 某些 Ceph 版本的 ceph osd df 不直接给 utilization，只给 kb / kb_used。
+// 这种形态下必须能算出使用率，否则热点检测会静默失效。
+func TestOSDTreeComputesUtilizationFromKB(t *testing.T) {
+	tr := newFakeRunner()
+	tr.on("node-3", []string{"ceph", "osd", "df", "-f", "json"}, `{"nodes":[
+      {"id":7,"name":"osd.7","type":"osd","status":"up","kb":1000,"kb_used":950},
+      {"id":8,"name":"osd.8","type":"osd","status":"up","kb":1000,"kb_used":400}]}`)
+
+	res, _, err := NewOSDTree(tr).Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := res.Data.(*OSDTreeData)
+	if d.OSDs[0].Utilization != 95 {
+		t.Errorf("osd.7 utilization = %v, want 95", d.OSDs[0].Utilization)
+	}
+	if len(d.Hotspots) != 1 || d.Hotspots[0].ID != 7 {
+		t.Errorf("expected osd.7 hotspot, got %+v", d.Hotspots)
+	}
+}
