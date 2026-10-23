@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
 )
 
 // CephStatusData 是 ceph_status 的结构化结果。
@@ -117,12 +115,7 @@ func (t *cephStatusTool) Execute(ctx context.Context, _ json.RawMessage) (*Resul
 		d.UsedPercent = float64(d.BytesUsed) / float64(d.BytesTotal) * 100
 	}
 
-	// 真实 Cluster.Run 会回填 Command；测试替身等实现可能留空，这里兜底用 argv 重建。
-	cmd := out.Command
-	if cmd == "" {
-		cmd = access.BuildCommand(argv)
-	}
-	raw := &Raw{Node: node, Command: cmd, Output: out.Stdout, Duration: out.Duration, ExitCode: out.ExitCode, Truncated: out.Truncated}
+	raw := newRaw(node, argv, out)
 
 	res := &Result{
 		Summary: fmt.Sprintf("%s，mon %d，OSD %d 总/%d up/%d in，PG %d（异常 %d），容量 %.1f%%",
