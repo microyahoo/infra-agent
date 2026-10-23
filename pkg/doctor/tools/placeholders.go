@@ -7,7 +7,6 @@ import (
 )
 
 // 以下构造函数在后续任务中逐个替换为真实实现。
-func NewCephStatus(r Runner) Tool             { return &pendingTool{name: "ceph_status"} }
 func NewOSDTree(r Runner) Tool                { return &pendingTool{name: "osd_tree"} }
 func NewPoolInfo(r Runner) Tool               { return &pendingTool{name: "pool_info"} }
 func NewPGDetail(r Runner) Tool               { return &pendingTool{name: "pg_detail"} }
