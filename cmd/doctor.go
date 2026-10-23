@@ -38,6 +38,7 @@ type doctorOptions struct {
 	BaseURL      string
 	APIKeyEnv    string
 	SSHTimeout   int
+	LLMRetries   int
 	DryRun       bool
 }
 
@@ -101,6 +102,7 @@ func init() {
 	f.StringVar(&doctorOpts.APIKeyEnv, "api-key-env", "OPENAI_API_KEY", "提供 API Key 的环境变量名")
 	f.IntVar(&doctorOpts.SSHTimeout, "ssh-timeout", 30, "单条命令超时（秒）")
 	f.BoolVar(&doctorOpts.DryRun, "dry-run", false, "仅连接并探测能力与拓扑，不调用模型")
+	f.IntVar(&doctorOpts.LLMRetries, "llm-retries", -1, "模型请求失败时的重试次数（-1 表示用默认值 2）")
 
 	_ = doctorCmd.MarkFlagRequired("host")
 }
@@ -171,8 +173,13 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		modelName, doctorOpts.MaxRounds, doctorOpts.MaxToolCalls)
 
 	d := doctor.New(doctor.Config{
-		Cluster:      cluster,
-		Model:        llm.NewClient(llm.Config{BaseURL: baseURL, APIKey: apiKey, Model: model}),
+		Cluster: cluster,
+		// MaxRetries 用负数表示「采用默认值」。零值意味着不重试，
+		// 一次 5xx 或限流就会让整次诊断白跑。--llm-retries 可覆盖。
+		Model: llm.NewClient(llm.Config{
+			BaseURL: baseURL, APIKey: apiKey, Model: model,
+			MaxRetries: doctorOpts.LLMRetries,
+		}),
 		SourceDir:    doctorOpts.CephSrc,
 		MaxRounds:    doctorOpts.MaxRounds,
 		MaxToolCalls: doctorOpts.MaxToolCalls,

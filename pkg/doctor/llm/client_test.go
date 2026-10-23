@@ -219,3 +219,26 @@ func TestClientRespectsContextCancellation(t *testing.T) {
 		t.Fatal("expected context error")
 	}
 }
+
+// 负数表示"未配置"，应当采用默认重试次数，而不是关闭重试。
+func TestClientNegativeRetriesUsesDefault(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(503)
+			return
+		}
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "k", Model: "m", MaxRetries: -1})
+	c.retryDelay = 0
+	if _, err := c.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if attempts < 3 {
+		t.Errorf("default retry should have retried, attempts = %d", attempts)
+	}
+}
