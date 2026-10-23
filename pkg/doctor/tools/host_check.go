@@ -8,9 +8,12 @@ import (
 	"strings"
 )
 
-// hostCheckLoadWarn 是告警阈值。为保证高核数节点（负载 12.5 也可能真实过载）不被漏报，
-// 取较低的固定阈值 10；如需按核数归一化，应在数据里补充 CPU 数后再调整。
-const hostCheckLoadWarn = 10.0
+// hostCheckLoadWarn 是「每核 1 分钟负载」的告警阈值。
+// 负载必须按核数归一化：64 核上负载 12 很健康，4 核上负载 12 已经过载。
+const hostCheckLoadWarn = 1.5
+
+// hostCheckLoadAbsFallback 在拿不到核数时的保守绝对阈值。
+const hostCheckLoadAbsFallback = 16.0
 
 // HostCheckData 是 host_check 的结构化结果。
 type HostCheckData struct {
@@ -54,6 +57,7 @@ func (t *hostCheckTool) Execute(ctx context.Context, args json.RawMessage) (*Res
 	d := &HostCheckData{Node: node}
 	var raw *Raw
 	var errs []string
+	cpus := 0
 
 	// 三条命令互相独立：任一失败只让对应字段留空，不使整个工具失败。
 	run := func(argv []string) (string, bool) {
@@ -78,6 +82,11 @@ func (t *hostCheckTool) Execute(ctx context.Context, args json.RawMessage) (*Res
 	if s, ok := run([]string{"df", "-h"}); ok {
 		d.Disk = strings.TrimSpace(s)
 	}
+	// nproc 只用于把负载按核数归一化，属于可选增强；
+	// 取不到就退回绝对阈值，不应计入「数据源不可用」。
+	if out, err := t.r.Run(ctx, node, []string{"nproc"}); err == nil {
+		cpus, _ = strconv.Atoi(strings.TrimSpace(out.Stdout))
+	}
 
 	res := &Result{Data: d}
 	switch {
@@ -90,8 +99,8 @@ func (t *hostCheckTool) Execute(ctx context.Context, args json.RawMessage) (*Res
 	}
 
 	// 只在确实异常时给提示，安静的主机不打扰模型。
-	if d.Load1 > hostCheckLoadWarn {
-		res.Hints = append(res.Hints, fmt.Sprintf("节点 1 分钟负载 %.2f 偏高，可能是 OSD 变慢的上游原因；可继续用 host_io 确认具体磁盘", d.Load1))
+	if over, desc := loadOverloaded(d.Load1, cpus); over {
+		res.Hints = append(res.Hints, fmt.Sprintf("节点负载偏高（%s），可能是 OSD 变慢的上游原因；可继续用 host_io 确认具体磁盘", desc))
 	}
 	if fullDisks := dfFullEntries(d.Disk); len(fullDisks) > 0 {
 		res.Hints = append(res.Hints, fmt.Sprintf("文件系统使用率已达 100%%：%s，检查是否影响 OSD 数据盘或日志盘", strings.Join(fullDisks, "、")))
@@ -100,6 +109,20 @@ func (t *hostCheckTool) Execute(ctx context.Context, args json.RawMessage) (*Res
 		res.Hints = append(res.Hints, "部分数据源不可用（"+strings.Join(errs, "；")+"）")
 	}
 	return res, raw, nil
+}
+
+// loadOverloaded 判断 1 分钟负载是否偏高。
+//
+// 拿到核数时按「每核负载」判断，避免高核数节点误报；
+// 拿不到核数时退回保守的绝对阈值，并在描述里说明依据。
+func loadOverloaded(load1 float64, cpus int) (bool, string) {
+	if cpus > 0 {
+		perCore := load1 / float64(cpus)
+		return perCore > hostCheckLoadWarn,
+			fmt.Sprintf("1 分钟负载 %.2f，%d 核，每核 %.2f", load1, cpus, perCore)
+	}
+	return load1 > hostCheckLoadAbsFallback,
+		fmt.Sprintf("1 分钟负载 %.2f（未取到核数）", load1)
 }
 
 // parseLoad1 从 uptime 输出解析 1 分钟负载，例如 "load average: 12.5, 11.0, 9.8"。
