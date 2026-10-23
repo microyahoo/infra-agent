@@ -8,7 +8,7 @@ import (
 // shellQuote 把任意字符串包装成 POSIX sh 的单引号字面量。
 // 单引号内的所有字符（含 $ ` ; | & > < 换行）都失去特殊含义，
 // 唯一的例外是单引号本身，处理方式是先闭合当前引号、输出一个转义的单引号、
-// 再重新打开引号（即 shell 里常见的 '\'' 序列）。
+// 再重新打开引号（即 shell 里常说的「闭引号 + 反斜杠转义单引号 + 开引号」三段式）。
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
