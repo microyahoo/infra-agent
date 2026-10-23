@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	cfgFile   string
-	namespace string
+	cfgFile    string
+	namespace  string
 	kubeconfig string
 )
 
