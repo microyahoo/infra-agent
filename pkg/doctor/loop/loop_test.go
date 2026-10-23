@@ -243,6 +243,40 @@ func TestLoopToolCallBudget(t *testing.T) {
 	}
 }
 
+// 该用例确保「总调用数上限」真正生效：放宽单工具上限，让 MaxToolCalls 成为唯一的约束。
+func TestLoopTotalToolCallBudgetBinds(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "probe", res: &tools.Result{Summary: "x"}})
+
+	var tcs []llm.ToolCall
+	for i := 0; i < 20; i++ {
+		tcs = append(tcs, llm.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "probe", Args: fmt.Sprintf(`{"i":%d}`, i)})
+	}
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: tcs},
+		{ToolCalls: []llm.ToolCall{{ID: "f", Name: ConcludeToolName, Args: conclusionJSON("low", nil)}}},
+	}}
+
+	r := NewRunner(RunnerConfig{
+		Model:        model,
+		Registry:     reg,
+		SystemPrompt: "s",
+		MaxRounds:    5,
+		MaxToolCalls: 3,
+		MaxPerTool:   50, // 不构成约束
+	})
+	res, err := r.Run(context.Background(), Task{Question: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Chain.Len(); got != 3 {
+		t.Errorf("total budget should cap evidence at 3, got %d", got)
+	}
+	if !res.BudgetExhausted {
+		t.Error("expected BudgetExhausted when total budget binds")
+	}
+}
+
 func TestCompressHistoryShrinksOldToolResults(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "sys"},
