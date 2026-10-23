@@ -23,6 +23,10 @@ type Config struct {
 
 	// authMethods 由 Dial 内部填充，供链式连接复用
 	authMethods []ssh.AuthMethod
+	// hostKeyCB 由 Dial 内部填充，链式连接复用同一校验策略
+	hostKeyCB ssh.HostKeyCallback
+	// hostKeyNote 记录主机键校验的放宽情况，写入报告警示
+	hostKeyNote string
 }
 
 func (c *Config) applyDefaults() {

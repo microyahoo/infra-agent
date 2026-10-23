@@ -137,3 +137,85 @@ func TestPolicyRejectsKubectlWrite(t *testing.T) {
 		}
 	}
 }
+
+// —— 只读保证的回归用例 ——
+// 这些用例覆盖「外层只读、内层/后续参数才变更」的绕过路径。
+
+func TestPolicyRejectsMutatingInnerExec(t *testing.T) {
+	p := DefaultPolicy()
+	rejected := [][]string{
+		// kubectl exec 的内层命令必须按独立命令校验
+		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "rm", "-rf", "/var/lib/rook"},
+		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "sh", "-c", "ceph osd rm 1"},
+		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "ceph", "osd", "pool", "set", "x", "size", "1"},
+		{"kubectl", "-n", "rook-ceph", "exec", "pod"},
+		// crictl / docker exec 同样
+		{"crictl", "exec", "abc123", "rm", "-rf", "/tmp/x"},
+		{"crictl", "exec", "abc123", "ceph", "osd", "out", "7"},
+		{"docker", "exec", "abc123", "sh", "-c", "ceph osd rm 1"},
+	}
+	for _, argv := range rejected {
+		if err := p.Check(argv); err == nil {
+			t.Errorf("expected rejected %v, got nil", argv)
+		}
+	}
+}
+
+func TestPolicyAllowsReadOnlyInnerExec(t *testing.T) {
+	p := DefaultPolicy()
+	allowed := [][]string{
+		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "ceph", "-s"},
+		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "ceph", "osd", "df", "-f", "json"},
+		{"crictl", "exec", "abc123", "ceph", "status", "-f", "json"},
+		{"docker", "exec", "abc123", "ceph", "pg", "stat"},
+	}
+	for _, argv := range allowed {
+		if err := p.Check(argv); err != nil {
+			t.Errorf("expected allowed %v, got %v", argv, err)
+		}
+	}
+}
+
+func TestPolicyRejectsMutatingCephTellArgs(t *testing.T) {
+	p := DefaultPolicy()
+	rejected := [][]string{
+		// 首词只读、后续参数才变更
+		{"ceph", "tell", "osd.0", "perf", "reset"},
+		{"ceph", "tell", "osd.0", "injectargs", "--osd_op_timeout=0"},
+		{"ceph", "tell", "osd.0", "log", "reset"},
+		// 多带参数的只读命令也要拒绝
+		{"ceph", "tell", "osd.0", "status", "extra"},
+		{"ceph", "tell", "osd.0", "dump_historic_ops", "x"},
+	}
+	for _, argv := range rejected {
+		if err := p.Check(argv); err == nil {
+			t.Errorf("expected rejected %v, got nil", argv)
+		}
+	}
+}
+
+func TestPolicyAllowsReadOnlyCephTellShapes(t *testing.T) {
+	p := DefaultPolicy()
+	allowed := [][]string{
+		{"ceph", "tell", "osd.7", "dump_historic_ops"},
+		{"ceph", "tell", "osd.7", "dump_ops_in_flight"},
+		{"ceph", "tell", "osd.7", "dump_blocked_ops"},
+		{"ceph", "tell", "osd.7", "status"},
+		{"ceph", "tell", "osd.7", "version"},
+		{"ceph", "tell", "osd.7", "log", "last", "200"},
+		{"ceph", "tell", "osd.7", "perf", "dump"},
+		{"ceph", "tell", "osd.7", "perf", "schema"},
+	}
+	for _, argv := range allowed {
+		if err := p.Check(argv); err != nil {
+			t.Errorf("expected allowed %v, got %v", argv, err)
+		}
+	}
+}
+
+func TestPolicyAllowsNproc(t *testing.T) {
+	p := DefaultPolicy()
+	if err := p.Check([]string{"nproc"}); err != nil {
+		t.Errorf("nproc 必须放行，否则 host_check 无法按核数归一化负载: %v", err)
+	}
+}

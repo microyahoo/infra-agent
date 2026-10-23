@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // clusterConn 持有到首节点的连接，并由它派生子连接。
@@ -19,6 +20,25 @@ type clusterConn struct {
 // chainAddr 拼装节点的 SSH 地址。
 func chainAddr(host string, port int) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// hostKeyCallback 根据是否提供 known_hosts 返回校验策略。
+//
+// 提供 known_hosts 时严格校验；未提供时退回 TOFU（接受任意主机键），
+// 并返回一段提示文字，由上层写进报告，让读者知道本次连接未经身份校验。
+func hostKeyCallback(knownHostsPath string) (ssh.HostKeyCallback, string, error) {
+	if knownHostsPath == "" {
+		return ssh.InsecureIgnoreHostKey(),
+			"未配置 known_hosts，本次 SSH 连接未校验主机身份（存在中间人风险）", nil
+	}
+	if _, err := os.Stat(knownHostsPath); err != nil {
+		return nil, "", fmt.Errorf("known_hosts %s: %w", knownHostsPath, err)
+	}
+	cb, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse known_hosts %s: %w", knownHostsPath, err)
+	}
+	return cb, "", nil
 }
 
 // buildAuth 组装认证方式。
@@ -57,10 +77,17 @@ func Dial(ctx context.Context, cfg Config) (*Cluster, error) {
 	}
 	cfg.authMethods = auth
 
+	hostCB, keyNote, err := hostKeyCallback(cfg.KnownHostsPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg.hostKeyNote = keyNote
+	cfg.hostKeyCB = hostCB
+
 	clientCfg := &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            auth,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostCB,
 		Timeout:         cfg.DialTimeout,
 	}
 
@@ -95,7 +122,7 @@ func (cc *clusterConn) dialNode(ctx context.Context, host string) (*ssh.Client, 
 	clientCfg := &ssh.ClientConfig{
 		User:            cc.cfg.User,
 		Auth:            cc.cfg.authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: cc.cfg.hostKeyCB,
 		Timeout:         cc.cfg.DialTimeout,
 	}
 

@@ -322,6 +322,10 @@ func (d *Doctor) primaryNode() string {
 // notes 汇总快照失败与能力降级说明。
 func (d *Doctor) notes(s snapshotResult, runErr error) []string {
 	var notes []string
+	// 连接层的安全放宽项（例如未校验主机键）必须让读者看到。
+	if sn, ok := d.cfg.Cluster.(interface{ SecurityNotes() []string }); ok {
+		notes = append(notes, sn.SecurityNotes()...)
+	}
 	if len(s.Failures) > 0 {
 		notes = append(notes, fmt.Sprintf("快照阶段有 %d 项失败：%s", len(s.Failures), strings.Join(s.Failures, "；")))
 	}

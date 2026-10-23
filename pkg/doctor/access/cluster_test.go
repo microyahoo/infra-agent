@@ -387,3 +387,32 @@ func newTestCluster(t *testing.T, handler func(argv []string) fakeSession) *Clus
 	})
 	return c
 }
+
+// Cluster 的缓存必须能在并发调用下安全使用：
+// 工具层将来会并行发起诊断命令。
+func TestClusterConcurrentRunIsSafe(t *testing.T) {
+	c := newTestCluster(t, func(argv []string) fakeSession {
+		return fakeSession{stdout: "ok"}
+	})
+	const n = 20
+	done := make(chan error, n*3)
+	for i := 0; i < n; i++ {
+		go func() {
+			_, err := c.Run(context.Background(), "node-3", []string{"ceph", "-s"})
+			done <- err
+		}()
+		go func() {
+			_ = c.Capabilities(context.Background(), "node-3")
+			done <- nil
+		}()
+		go func() {
+			_ = c.Nodes()
+			done <- nil
+		}()
+	}
+	for i := 0; i < n*3; i++ {
+		if err := <-done; err != nil {
+			t.Errorf("concurrent call failed: %v", err)
+		}
+	}
+}

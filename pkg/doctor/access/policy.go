@@ -22,7 +22,7 @@ func DefaultPolicy() *Policy {
 			"ceph": true, "crictl": true, "docker": true, "kubectl": true,
 			"iostat": true, "smartctl": true, "dmesg": true, "df": true,
 			"free": true, "uptime": true, "lsblk": true, "tail": true, "grep": true,
-			"ls": true, "command": true,
+			"ls": true, "command": true, "nproc": true,
 		},
 		cephVerbs: map[string]bool{
 			"-s": true, "--version": true, "-v": true,
@@ -78,19 +78,11 @@ func (p *Policy) checkCeph(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("rejected: bare ceph")
 	}
-	// tell 的形态是 tell <daemon> <cmd>...，只允许只读 cmd
+	// tell 的形态是 tell <daemon> <cmd>...，只允许只读 cmd。
+	// 必须按「完整子命令形状」匹配，只比对 args[2] 会漏掉
+	// tell osd.N perf reset 这类「首词只读、后续参数才变更」的命令。
 	if args[0] == "tell" {
-		if len(args) < 3 {
-			return fmt.Errorf("rejected: ceph tell needs daemon and command")
-		}
-		if p.cephDeny[args[2]] {
-			return fmt.Errorf("rejected: ceph tell %q is a mutating command", args[2])
-		}
-		switch args[2] {
-		case "dump_historic_ops", "dump_ops_in_flight", "status", "log", "version", "perf", "dump_blocked_ops":
-			return nil
-		}
-		return fmt.Errorf("rejected: ceph tell command %q not in allowlist", args[2])
+		return p.checkCephTell(args)
 	}
 	// pg <pgid> query 形态
 	if args[0] == "pg" && len(args) >= 3 && args[2] == "query" {
@@ -124,13 +116,118 @@ func (p *Policy) checkCeph(args []string) error {
 	return fmt.Errorf("rejected: ceph subcommand %q not in allowlist", strings.Join(args[:min(2, len(args))], " "))
 }
 
+// checkCephTell 校验 tell <daemon> <subcmd> [args...]。
+// 只放行精确的只读形状；任何未列出的组合一律拒绝。
+func (p *Policy) checkCephTell(args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("rejected: ceph tell needs daemon and command")
+	}
+	sub := args[2]
+	rest := len(args) - 3
+
+	// 无参数的只读命令
+	switch sub {
+	case "dump_historic_ops", "dump_ops_in_flight", "dump_blocked_ops", "status", "version":
+		if rest == 0 {
+			return nil
+		}
+		return fmt.Errorf("rejected: ceph tell %q takes no extra arguments", sub)
+	case "log":
+		// 只允许 log last <N>
+		if rest == 2 && args[3] == "last" && isDigits(args[4]) {
+			return nil
+		}
+		return fmt.Errorf("rejected: ceph tell log only supports 'last <N>'")
+	case "perf":
+		// 只允许 perf dump / perf schema；perf reset 是变更操作
+		if rest == 1 && (args[3] == "dump" || args[3] == "schema") {
+			return nil
+		}
+		return fmt.Errorf("rejected: ceph tell perf only supports dump/schema")
+	}
+	return fmt.Errorf("rejected: ceph tell command %q not in allowlist", sub)
+}
+
+// isDigits 判断字符串是否全为数字（用于校验日志行数）。
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *Policy) checkKubectl(args []string) error {
 	verb := p.kubectlVerb(args)
 	switch verb {
-	case "get", "describe", "logs", "exec":
+	case "get", "describe", "logs":
 		return nil
+	case "exec":
+		return p.checkExecInner(args, "--")
 	}
 	return fmt.Errorf("rejected: kubectl verb %q not allowed", verb)
+}
+
+// containerIDIndex 返回容器 ID 在 args 中的下标（args 为 exec 之后的参数）。
+// 需要识别带取值的选项（如 --timeout 10），否则选项的值会被误当成容器 ID。
+func containerIDIndex(args []string) int {
+	withValue := map[string]bool{
+		"--timeout": true, "-t": true,
+		"--runtime": true, "-r": true,
+		"--runtime-endpoint": true, "-i": true,
+		"--image-endpoint": true,
+		"--namespace":      true, "-n": true,
+		"--user": true, "-u": true,
+		"--workdir": true, "-w": true,
+		"--env": true, "-e": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			return i
+		}
+		if strings.Contains(a, "=") {
+			continue
+		}
+		if withValue[a] && i+1 < len(args) {
+			i++
+		}
+	}
+	return -1
+}
+
+// checkExecInner 递归校验容器 exec 的内层命令。
+//
+// `kubectl exec <pod> -- <cmd...>` 与 `crictl/docker exec <id> <cmd...>`
+// 的外层动词是只读的，但真正执行的是内层命令。外层通过不代表内层安全，
+// 必须把内层当成一条独立命令重新走一遍策略。
+func (p *Policy) checkExecInner(args []string, sep string) error {
+	idx := -1
+	for i, a := range args {
+		if a == sep {
+			idx = i
+			break
+		}
+	}
+	var inner []string
+	if idx >= 0 {
+		inner = args[idx+1:]
+	} else {
+		// crictl/docker exec <opts> <container-id> <cmd...>，无分隔符。
+		// 先跳过选项找到容器 ID 的下标，其后的所有参数（含内层命令自己的
+		// 选项，如 `ceph -s` 的 -s）都原样作为内层命令。
+		if i := containerIDIndex(args[1:]); i >= 0 && i+1 < len(args)-1 {
+			inner = args[1:][i+1:]
+		}
+	}
+	if len(inner) == 0 {
+		return fmt.Errorf("rejected: %s exec requires an inner command", args[0])
+	}
+	return p.Check(inner)
 }
 
 // kubectlVerb 找到真正的动词：跳过以 '-' 开头的选项，
@@ -160,7 +257,8 @@ func (p *Policy) checkContainerCLI(args []string) error {
 		if len(args) < 3 {
 			return fmt.Errorf("rejected: crictl/docker exec needs container and command")
 		}
-		return nil
+		// crictl/docker exec 没有 "--"，内层命令紧跟在容器 ID 之后
+		return p.checkExecInner(args, "")
 	}
 	return fmt.Errorf("rejected: container subcommand %q not allowed", args[0])
 }

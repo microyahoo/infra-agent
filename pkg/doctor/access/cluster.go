@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -17,11 +18,15 @@ type executor func(ctx context.Context, node string, argv []string) (Output, err
 // 以及能力与拓扑的按需缓存都在这里完成。
 type Cluster struct {
 	conn     *clusterConn
-	nodes    map[string]bool
-	caps     map[string]Capabilities
 	executor executor
-	topo     *Topology
-	clients  map[string]*ssh.Client
+
+	// mu 保护下列所有缓存。工具层将来会并发调用 Run，
+	// 缓存必须同时支持并发读与写入。
+	mu      sync.RWMutex
+	nodes   map[string]bool
+	caps    map[string]Capabilities
+	topo    *Topology
+	clients map[string]*ssh.Client
 
 	// toolboxPod / monContainer 缓存容器路由需要定位的目标，避免每次命令都查一遍。
 	toolboxPod   string
@@ -50,7 +55,10 @@ func (c *Cluster) Run(ctx context.Context, node string, argv []string) (Output, 
 	if err := c.conn.cfg.Policy.Check(argv); err != nil {
 		return Output{}, &ToolError{Kind: KindFailed, Message: err.Error()}
 	}
-	if !c.nodes[node] {
+	c.mu.RLock()
+	known := c.nodes[node]
+	c.mu.RUnlock()
+	if !known {
 		return Output{}, unavailable("未知节点 %q", node)
 	}
 	out, err := c.executor(ctx, node, argv)
@@ -177,8 +185,11 @@ func (c *Cluster) rewrite(ctx context.Context, node string, argv []string) ([]st
 
 // toolboxPodName 查找并缓存 rook toolbox pod 名。
 func (c *Cluster) toolboxPodName(ctx context.Context, node string) (string, error) {
-	if c.toolboxPod != "" {
-		return c.toolboxPod, nil
+	c.mu.RLock()
+	pod := c.toolboxPod
+	c.mu.RUnlock()
+	if pod != "" {
+		return pod, nil
 	}
 	argv := []string{"kubectl", "-n", "rook-ceph", "get", "pod",
 		"-l", "app=rook-ceph-tools", "-o", "jsonpath={.items[0].metadata.name}"}
@@ -190,14 +201,19 @@ func (c *Cluster) toolboxPodName(ctx context.Context, node string) (string, erro
 	if name == "" {
 		return "", unavailable("节点 %q 上未找到 rook-ceph-tools pod", node)
 	}
+	c.mu.Lock()
 	c.toolboxPod = name
+	c.mu.Unlock()
 	return name, nil
 }
 
 // monContainerID 查找并缓存 mon 容器 ID，供 crictl/docker exec 使用。
 func (c *Cluster) monContainerID(ctx context.Context, node, rt string) (string, error) {
-	if c.monContainer != "" {
-		return c.monContainer, nil
+	c.mu.RLock()
+	cid := c.monContainer
+	c.mu.RUnlock()
+	if cid != "" {
+		return cid, nil
 	}
 	var argv []string
 	switch rt {
@@ -217,7 +233,9 @@ func (c *Cluster) monContainerID(ctx context.Context, node, rt string) (string, 
 	if id == "" {
 		return "", unavailable("节点 %q 上未找到 rook-ceph-mon 容器", node)
 	}
+	c.mu.Lock()
 	c.monContainer = id
+	c.mu.Unlock()
 	return id, nil
 }
 
@@ -232,12 +250,24 @@ func parseFirstLine(s string) string {
 }
 
 func (c *Cluster) clientFor(ctx context.Context, node string) (*ssh.Client, error) {
-	if cl, ok := c.clients[node]; ok {
+	c.mu.RLock()
+	cl, ok := c.clients[node]
+	c.mu.RUnlock()
+	if ok {
 		return cl, nil
 	}
 	cl, err := c.conn.dialNode(ctx, node)
 	if err != nil {
 		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// 双检：并发建连时保留先注册的那条，关闭多余的
+	if existing, exists := c.clients[node]; exists && existing != c.conn.entry {
+		if cl != c.conn.entry {
+			cl.Close()
+		}
+		return existing, nil
 	}
 	c.clients[node] = cl
 	return cl, nil
@@ -245,20 +275,28 @@ func (c *Cluster) clientFor(ctx context.Context, node string) (*ssh.Client, erro
 
 // Capabilities 返回节点的能力，结果按节点缓存。
 func (c *Cluster) Capabilities(ctx context.Context, node string) Capabilities {
-	if caps, ok := c.caps[node]; ok {
+	c.mu.RLock()
+	caps, ok := c.caps[node]
+	c.mu.RUnlock()
+	if ok {
 		return caps
 	}
 	tr := &clusterTransport{cluster: c, node: node}
-	caps := probeCapabilities(ctx, tr)
+	caps = probeCapabilities(ctx, tr)
+	c.mu.Lock()
 	c.caps[node] = caps
+	c.mu.Unlock()
 	return caps
 }
 
 // Topology 返回集群拓扑，首次调用时发现并缓存。
 // 以入口节点为数据源，发现到的节点全部登记，之后其余节点即可直接 Run。
 func (c *Cluster) Topology(ctx context.Context) (*Topology, error) {
-	if c.topo != nil {
-		return c.topo, nil
+	c.mu.RLock()
+	cached := c.topo
+	c.mu.RUnlock()
+	if cached != nil {
+		return cached, nil
 	}
 	entry := c.conn.cfg.Host
 
@@ -280,6 +318,8 @@ func (c *Cluster) Topology(ctx context.Context) (*Topology, error) {
 	tr := &clusterTransport{cluster: c, node: entry}
 	topo := buildTopology(ctx, tr, fsid, nodes)
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, n := range topo.Nodes {
 		c.nodes[n.Name] = true
 	}
@@ -287,8 +327,19 @@ func (c *Cluster) Topology(ctx context.Context) (*Topology, error) {
 	return c.topo, nil
 }
 
+// SecurityNotes 返回本次连接在安全上的放宽项（例如未校验主机键）。
+// 这些提示会写进报告，让读者知道结论是在什么信任前提下得出的。
+func (c *Cluster) SecurityNotes() []string {
+	if c.conn.cfg.hostKeyNote == "" {
+		return nil
+	}
+	return []string{c.conn.cfg.hostKeyNote}
+}
+
 // Nodes 返回已知节点列表（入口节点在前），顺序稳定便于展示。
 func (c *Cluster) Nodes() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	out := make([]string, 0, len(c.nodes))
 	if c.conn.cfg.Host != "" && c.nodes[c.conn.cfg.Host] {
 		out = append(out, c.conn.cfg.Host)
@@ -303,6 +354,8 @@ func (c *Cluster) Nodes() []string {
 
 // Close 关闭所有派生连接以及入口连接。
 func (c *Cluster) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, cl := range c.clients {
 		if cl != c.conn.entry {
 			cl.Close()
