@@ -7,9 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/microyahoo/infra-agent/pkg/common"
-	v1 "k8s.io/api/core/v1"
 )
 
 // LogAnalyzer 日志分析器
