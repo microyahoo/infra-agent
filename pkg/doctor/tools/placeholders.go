@@ -7,8 +7,6 @@ import (
 )
 
 // 以下构造函数在后续任务中逐个替换为真实实现。
-func NewPoolInfo(r Runner) Tool               { return &pendingTool{name: "pool_info"} }
-func NewPGDetail(r Runner) Tool               { return &pendingTool{name: "pg_detail"} }
 func NewOSDDetail(r Runner) Tool              { return &pendingTool{name: "osd_detail"} }
 func NewDaemonLog(r Runner) Tool              { return &pendingTool{name: "daemon_log"} }
 func NewSlowOps(r Runner) Tool                { return &pendingTool{name: "slow_ops"} }
