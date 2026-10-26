@@ -389,3 +389,92 @@ func TestReportNotesTruncation(t *testing.T) {
 		}
 	}
 }
+
+// 提示词必须把模型当调查者而不是脚本：要有假设驱动、要区分"没有数据"和"没有问题"。
+func TestPromptIsInvestigationProtocol(t *testing.T) {
+	fc := newFakeCluster()
+	snap := Snapshot{
+		ClusterID:    "fsid-abc",
+		Health:       "HEALTH_WARN",
+		Capabilities: fc.caps,
+		Topology:     fc.topo,
+	}
+	p := SystemPrompt(snap, "集群看着异常")
+
+	checks := map[string]string{
+		"必须调 health detail": "ceph_health",
+		"假设驱动":              "假设",
+		"要区分观测失败":           "没能观测",
+		"用工具给的提示":           "next_hints",
+		"不能变更":              "不能变更",
+	}
+	for why, want := range checks {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q (%s)", want, why)
+		}
+	}
+	// 不能再是"跑一遍标准检查"的语气
+	if strings.Contains(p, "请现在开始调查：先根据上面的快照判断需要补查哪些信息") {
+		t.Error("prompt still uses the old generic phrasing")
+	}
+}
+
+// 健康状况必须每轮刷新：会话开始时 HEALTH_OK，之后变 WARN，
+// 追问时模型必须看到 WARN，而不是沿用旧值。
+func TestSessionRefreshesHealthOnFollowUp(t *testing.T) {
+	fc := newMutableHealthCluster()
+	model := &seqModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: loop.ConcludeToolName, Args: conclusionArgs("none")}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: loop.ConcludeToolName, Args: conclusionArgs("high")}}},
+	}}
+
+	d := New(Config{Cluster: fc, Model: model})
+	sess, err := d.OpenSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := sess.Ask(context.Background(), "第一次")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 集群状态在这之后恶化
+	fc.statusCalls = 0
+	fc.warn = true
+
+	second, err := sess.FollowUp(context.Background(), first, "现在呢")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Conclusion == nil {
+		t.Fatal("expected conclusion")
+	}
+	if fc.statusCalls == 0 {
+		t.Error("follow-up must re-query ceph status")
+	}
+}
+
+// newMutableHealthCluster 的健康状态可切换，用于验证刷新行为。
+func newMutableHealthCluster() *mutableHealthCluster {
+	fc := newFakeCluster()
+	return &mutableHealthCluster{fakeCluster: fc}
+}
+
+type mutableHealthCluster struct {
+	*fakeCluster
+	warn        bool
+	statusCalls int
+}
+
+func (m *mutableHealthCluster) Run(ctx context.Context, node string, argv []string) (access.Output, error) {
+	if strings.Join(argv, " ") == "ceph status -f json" {
+		m.statusCalls++
+		health := "HEALTH_OK"
+		if m.warn {
+			health = "HEALTH_WARN"
+		}
+		return access.Output{
+			Stdout: `{"fsid":"fsid-abc","health":{"status":"` + health + `"},"monmap":{"num_mons":3},"osdmap":{"num_osds":1,"num_up_osds":1,"num_in_osds":1},"pgmap":{"num_pgs":10,"pgs_by_state":[{"state_name":"active+clean","count":10}],"bytes_total":100,"bytes_used":50}}`,
+		}, nil
+	}
+	return m.fakeCluster.Run(ctx, node, argv)
+}

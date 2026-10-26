@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-func TestDefaultRegistryHasTwelveTools(t *testing.T) {
+func TestDefaultRegistryHasAllTools(t *testing.T) {
 	r := DefaultRegistry(nil)
 	names := r.Names()
-	if len(names) != 12 {
-		t.Fatalf("got %d tools, want 12: %v", len(names), names)
+	if len(names) != 13 {
+		t.Fatalf("got %d tools, want 13: %v", len(names), names)
 	}
 	want := []string{
-		"ceph_status", "osd_tree", "pool_info", "pg_detail", "osd_detail",
+		"ceph_status", "ceph_health", "osd_tree", "pool_info", "pg_detail", "osd_detail",
 		"daemon_log", "slow_ops", "perf_counters", "host_io", "read_log",
 		"host_check", "ceph_source_lookup",
 	}

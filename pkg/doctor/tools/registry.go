@@ -115,6 +115,7 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 func All(r Runner, srcDir string) []Tool {
 	return []Tool{
 		NewCephStatus(r),
+		NewCephHealth(r),
 		NewOSDTree(r),
 		NewPoolInfo(r),
 		NewPGDetail(r),

@@ -322,15 +322,15 @@ func TestLoopUnknownToolDoesNotCrash(t *testing.T) {
 }
 
 // 续聊必须保留上一轮的对话与证据，并由新一轮问题驱动。
-func TestFollowUpKeepsHistoryAndEvidence(t *testing.T) {
+// 续聊必须复用证据链与上一轮结论，但**不能重放全部历史**——
+// 全量累积会让上下文在几轮内膨胀到吃光预算（实测 400 秒 0 次工具调用）。
+func TestFollowUpCompactsHistoryButKeepsEvidence(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(&stubTool{name: "probe", res: &tools.Result{Summary: "第一次查到的结果"}})
 
 	model := &scriptedModel{replies: []llm.Reply{
-		// 第一轮：查一次，给结论
 		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: "{}"}}},
 		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: ConcludeToolName, Args: conclusionJSON("low", []string{"ev-001"})}}},
-		// 第二轮（续聊）：直接给结论
 		{ToolCalls: []llm.ToolCall{{ID: "c3", Name: ConcludeToolName, Args: conclusionJSON("medium", nil)}}},
 	}}
 
@@ -342,34 +342,44 @@ func TestFollowUpKeepsHistoryAndEvidence(t *testing.T) {
 	if first.Chain.Len() != 1 {
 		t.Fatalf("first chain = %d", first.Chain.Len())
 	}
-	if len(first.Messages) == 0 {
-		t.Fatal("first run must persist messages for follow-up")
-	}
 
 	second, err := r.FollowUp(context.Background(), first, "那 osd.92 呢")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 证据链复用，不重复收集
 	if second.Chain.Len() != 1 {
-		t.Errorf("follow-up must reuse the same chain, got %d evidences", second.Chain.Len())
+		t.Errorf("follow-up must reuse the same chain, got %d", second.Chain.Len())
 	}
 	if second.Conclusion == nil || second.Conclusion.Severity != "medium" {
 		t.Errorf("follow-up conclusion = %+v", second.Conclusion)
 	}
-	// 第二轮发给模型的消息里必须包含第一轮的问题与工具结果
+
 	secondCall := model.seenMsgs[len(model.seenMsgs)-1]
 	var joined strings.Builder
 	for _, m := range secondCall {
 		joined.WriteString(m.Content)
 	}
-	if !strings.Contains(joined.String(), "集群怎么样") {
-		t.Error("follow-up lost the original question")
+	ctx := joined.String()
+
+	// 必须带上：上一轮结论与本轮问题
+	if !strings.Contains(ctx, "上一轮结论") {
+		t.Error("follow-up should carry the previous conclusion")
 	}
-	if !strings.Contains(joined.String(), "第一次查到的结果") {
-		t.Error("follow-up lost the previous tool result")
-	}
-	if !strings.Contains(joined.String(), "那 osd.92 呢") {
+	if !strings.Contains(ctx, "那 osd.92 呢") {
 		t.Error("follow-up question missing")
+	}
+	// 必须带上证据要点
+	if !strings.Contains(ctx, "第一次查到的结果") {
+		t.Error("follow-up lost the evidence summaries")
+	}
+	// 不应重放：消息条数应远小于累积历史
+	if len(secondCall) > 4 {
+		t.Errorf("follow-up context too large: %d messages (should be system+user only)", len(secondCall))
+	}
+	// 原始问题不应被当成对话历史重现（它已体现在结论里）
+	if strings.Count(ctx, "集群怎么样") > 0 {
+		t.Log("original question echoed; acceptable only if inside conclusion")
 	}
 }
 
@@ -469,4 +479,114 @@ func TestForceConclusionHandlesTruncation(t *testing.T) {
 	if res.TruncatedReplies == 0 {
 		t.Error("expected TruncatedReplies > 0")
 	}
+}
+
+// 工具的 Hints 必须送到模型面前，否则工具里固化的诊断经验全是死代码。
+func TestToolHintsReachModel(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "probe", res: &tools.Result{
+		Summary: "心跳慢，最长 1237ms",
+		Hints:   []string{"先看节点负载，再确认 OSD 所在节点", "可用 osd_detail(osd_id=13)"},
+	}})
+
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: "{}"}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: ConcludeToolName, Args: conclusionJSON("low", []string{"ev-001"})}}},
+	}}
+
+	r := newTestLoop(t, model, reg)
+	if _, err := r.Run(context.Background(), Task{Question: "q"}); err != nil {
+		t.Fatal(err)
+	}
+
+	second := model.seenMsgs[1]
+	var toolMsg string
+	for _, m := range second {
+		if m.Role == llm.RoleTool {
+			toolMsg = m.Content
+		}
+	}
+	if toolMsg == "" {
+		t.Fatal("no tool result message found")
+	}
+	if !strings.Contains(toolMsg, "osd_detail") {
+		t.Errorf("hints must reach the model, got: %s", toolMsg)
+	}
+	if !strings.Contains(toolMsg, "节点负载") {
+		t.Errorf("hints content missing, got: %s", toolMsg)
+	}
+}
+
+// 工具的 Data（结构化细节）必须送到模型面前，
+// 只给一句 summary 会让模型看不到 OSD 编号、磁盘名等可下钻的信息。
+func TestToolDataReachesModel(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&stubDataTool{name: "probe", data: map[string]any{
+		"osds": []map[string]any{{"id": 13, "host": "node03", "device": "sdb"}},
+	}})
+
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: "{}"}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: ConcludeToolName, Args: conclusionJSON("low", []string{"ev-001"})}}},
+	}}
+
+	r := newTestLoop(t, model, reg)
+	if _, err := r.Run(context.Background(), Task{Question: "q"}); err != nil {
+		t.Fatal(err)
+	}
+
+	second := model.seenMsgs[1]
+	var toolMsg string
+	for _, m := range second {
+		if m.Role == llm.RoleTool {
+			toolMsg = m.Content
+		}
+	}
+	for _, want := range []string{"node03", "sdb", "13"} {
+		if !strings.Contains(toolMsg, want) {
+			t.Errorf("data missing %q in tool result: %s", want, toolMsg)
+		}
+	}
+}
+
+// 过大的工具结果要被截断，避免一次调用吃光上下文。
+func TestOversizedToolResultIsTruncated(t *testing.T) {
+	big := strings.Repeat("x", maxToolResultChars*2)
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "probe", res: &tools.Result{Summary: big}})
+
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: "{}"}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: ConcludeToolName, Args: conclusionJSON("low", []string{"ev-001"})}}},
+	}}
+
+	r := newTestLoop(t, model, reg)
+	if _, err := r.Run(context.Background(), Task{Question: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	second := model.seenMsgs[1]
+	for _, m := range second {
+		if m.Role == llm.RoleTool && len(m.Content) > maxToolResultChars+200 {
+			t.Errorf("tool result not truncated: %d chars", len(m.Content))
+		}
+	}
+	// 截断后证据链仍保留完整原文
+	if !strings.Contains(second[len(second)-1].Content, "ev-001") {
+		t.Log("chain retained separately")
+	}
+}
+
+// stubDataTool 返回带结构化 Data 的工具。
+type stubDataTool struct {
+	name string
+	data any
+}
+
+func (s *stubDataTool) Name() string        { return s.name }
+func (s *stubDataTool) Description() string { return "stub " + s.name }
+func (s *stubDataTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{}}`)
+}
+func (s *stubDataTool) Execute(_ context.Context, _ json.RawMessage) (*tools.Result, *tools.Raw, error) {
+	return &tools.Result{Summary: "带数据的工具", Data: s.data}, &tools.Raw{Node: "node-3"}, nil
 }

@@ -242,6 +242,21 @@ func (d *Doctor) snapshot(ctx context.Context) snapshotResult {
 	return s
 }
 
+// refreshHealth 只重取健康状态，用于后续追问。
+//
+// 拓扑与能力在会话期间基本不变，重取只是浪费；但健康状况随时会变，
+// 沿用旧值会让模型拿过期的 HEALTH_OK 解释当前的 HEALTH_WARN。
+func (d *Doctor) refreshHealth(ctx context.Context, s *snapshotResult) {
+	if !s.Capabilities.CephCLI {
+		return
+	}
+	s.Health = snapshotHealthUnknown
+	s.Summary = ""
+	s.Evidence = nil
+	node := d.primaryNode()
+	s.Evidence = append(s.Evidence, d.snapshotStatus(ctx, node, s)...)
+}
+
 // snapshotStatus 执行 ceph status 并提取健康状态与 FSID，同时记录证据。
 func (d *Doctor) snapshotStatus(ctx context.Context, node string, s *snapshotResult) []loop.Evidence {
 	start := time.Now()

@@ -38,6 +38,22 @@ const truncatedContentHint = "你的上一条回复因为超出输出长度上�
 const truncatedArgsHint = "你的工具调用参数因为超出输出长度上限而被截断了，JSON 不完整。" +
 	"请缩小本次调用的参数范围（例如减少 osd_ids 的数量、降低 lines 行数），然后重新调用。"
 
+// maxToolResultChars 限制单条工具结果进入上下文的长度。
+// 证据链保留完整原文，这里只约束模型看到的部分。
+const maxToolResultChars = 6000
+
+// truncateUTF8 按 rune 安全截断，避免切坏多字节字符。
+func truncateUTF8(s string, limit int) (string, bool) {
+	if len(s) <= limit {
+		return s, false
+	}
+	r := []rune(s)
+	if len(r) <= limit {
+		return s, false
+	}
+	return string(r[:limit]) + "…[已截断，完整内容见证据链]", true
+}
+
 // 压缩后的工具结果标记。
 const compressedMarker = "[已压缩，完整输出见证据链]"
 
@@ -141,9 +157,10 @@ func (r *SessionRunner) Run(ctx context.Context, task Task) (*Result, error) {
 
 // FollowUp 在已有会话上继续追问。
 //
-// 保留此前的对话与证据链，因此模型能看到上次查到的内容，
-// 用户也可以就同一个集群连续追问（"那 osd.92 呢？"、"先看网络"）。
-// 预算按新一轮重新计算，避免长会话耗尽后无法再问。
+// 关键：不重放此前的原始对话。多轮追问时把完整消息历史全量带上，
+// 上下文会在几轮内膨胀到把预算吃光——实际观察到过"耗时 400 秒、0 次工具调用"。
+// 这里改为用证据链重建一份紧凑的"已知情况"摘要：
+// 保留上一轮的结论与全部证据要点，丢弃冗长的工具原始返回。
 func (r *SessionRunner) FollowUp(ctx context.Context, prev *Result, question string) (*Result, error) {
 	if prev == nil {
 		return r.Run(ctx, Task{Question: question})
@@ -153,14 +170,63 @@ func (r *SessionRunner) FollowUp(ctx context.Context, prev *Result, question str
 		reg = tools.NewRegistry()
 	}
 
-	msgs := append([]llm.Message{}, prev.Messages...)
-	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: question})
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: r.systemPrompt},
+		{Role: llm.RoleUser, Content: followUpContext(prev, question)},
+	}
 
 	res := &Result{Chain: prev.Chain}
 	if res.Chain == nil {
 		res.Chain = NewChain()
 	}
 	return r.runLoop(ctx, reg, msgs, res)
+}
+
+// followUpContext 把上一轮的成果压缩成一段紧凑上下文。
+//
+// 只保留"已经知道了什么"，不重放逐条对话——追问要的是结论和证据要点，
+// 不是上一次的完整工具原始输出。
+func followUpContext(prev *Result, question string) string {
+	var b strings.Builder
+
+	b.WriteString("## 续接上一次调查\n\n")
+	b.WriteString("下面是你在前几轮已经查到的结果。不要重复查询这些内容，直接在此基础上继续。\n\n")
+
+	if prev.Conclusion != nil {
+		b.WriteString("### 上一轮结论\n")
+		b.WriteString(fmt.Sprintf("- 严重度：%s\n", prev.Conclusion.Severity))
+		b.WriteString(fmt.Sprintf("- 结论：%s\n", prev.Conclusion.Headline))
+		if prev.Conclusion.Impact != "" {
+			b.WriteString(fmt.Sprintf("- 影响：%s\n", prev.Conclusion.Impact))
+		}
+		if len(prev.Conclusion.Unknowns) > 0 {
+			b.WriteString("- 当时未能确定的：\n")
+			for _, u := range prev.Conclusion.Unknowns {
+				b.WriteString(fmt.Sprintf("  - %s（原因：%s）\n", u.What, u.Why))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	if prev.Chain != nil && prev.Chain.Len() > 0 {
+		b.WriteString("### 已收集的证据\n")
+		for _, e := range prev.Chain.All() {
+			status := "成功"
+			detail := e.Summary
+			if e.ErrorKind != "" {
+				status = "失败(" + e.ErrorKind + ")"
+				detail = e.ErrorMsg
+			}
+			b.WriteString(fmt.Sprintf("- %s %s [%s]：%s\n", e.ID, e.Tool, status, detail))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("### 本轮问题\n\n")
+	b.WriteString(question)
+	b.WriteString("\n\n继续调查。如果这个问题已经在上面有答案，直接给出结论即可；")
+	b.WriteString("需要新信息时再调用工具，并优先针对上一轮 unknowns 中列出的缺口。")
+	return b.String()
 }
 
 // runLoop 是首轮与续聊共用的调查内核。
@@ -429,11 +495,35 @@ func (r *SessionRunner) executeTool(ctx context.Context, reg *tools.Registry, ch
 		ev.Summary = result.Summary
 	}
 	stored := chain.Add(ev)
-	content := mustJSON(map[string]any{
-		"evidence_id": stored.ID,
-		"summary":     stored.Summary,
-	})
-	return stored, content
+	return stored, toolResultContent(stored, result)
+}
+
+// toolResultContent 构造发给模型的工具结果。
+//
+// 只给一句 Summary 是不够的：模型看不到 OSD 编号、磁盘名、量化数值，
+// 只能反复执行同样的通用查询。Data 提供结构化细节，Hints 提供下一步方向，
+// 两者都必须在上下文里，模型才可能真正做定位而不是空转。
+func toolResultContent(ev Evidence, result *tools.Result) string {
+	payload := map[string]any{
+		"evidence_id": ev.ID,
+		"summary":     ev.Summary,
+	}
+	if result != nil {
+		if result.Data != nil {
+			payload["data"] = result.Data
+		}
+		if len(result.Hints) > 0 {
+			payload["next_hints"] = result.Hints
+		}
+	}
+	out := mustJSON(payload)
+
+	// 单个结果过大时截断，避免一次工具调用吃光上下文。
+	// 原始输出仍完整保存在证据链里，报告阶段可以引用。
+	if len(out) > maxToolResultChars {
+		out, _ = truncateUTF8(out, maxToolResultChars)
+	}
+	return out
 }
 
 // classifyToolError 把工具错误映射为语义化的错误类型。

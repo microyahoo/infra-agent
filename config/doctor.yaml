@@ -43,26 +43,34 @@ doctor:
   # --------------------------------------------------------------------------
   llm:
     # 模型名。中转站通常要写它自己的模型别名。
-    model: gpt-4o
+    model: deepseek-v4.1-flash
 
     # 接口地址。留空则用 OpenAI 官方；用中转站时填中转地址。
     # 注意 base_url 不需要带 /chat/completions，程序会自己拼。
-    base_url: ""
+    base_url: "https://token-wormhole.deeproute.cn"
 
     # API Key 的两种来源，二选一：
     #   1) 本字段直接写（不建议，配置文件容易被提交）
     #   2) 留空，改用下面的环境变量名
-    api_key: ""
+    api_key: "sk-cdaeb2c70a154748ca619415d9864ff07f4aeccd98deb8a4451b3bd956024fb7"
     api_key_env: OPENAI_API_KEY
 
     # 采样温度。诊断场景建议 0~0.3，越低结论越稳定。
     temperature: 0.2
 
-    # 单次回复的最大 token
-    max_tokens: 4096
+    # 单次模型回复的最大 token 数。
+    #
+    # 这是"模型这一次说多少话"的上限，不是上下文窗口：
+    # 工具输出再长也由上下文压缩控制，与本项无关。
+    #
+    # 设为 0 表示不发送该字段，交给服务端决定。多数中转站/vLLM 的
+    # 默认值很小（16~256），容易把结论 JSON 截断，因此不建议设 0。
+    # 被截断时程序会识别 finish_reason=length 并要求模型精简重试，
+    # 但反复截断会白白消耗轮次预算。
+    max_tokens: 8192
 
     # 单次请求超时（秒）。长上下文 + 工具调用可能比较慢。
-    timeout: 120
+    timeout: 300
 
     # 失败重试次数。
     # -1 = 使用内置默认值（2 次）

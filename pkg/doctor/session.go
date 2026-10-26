@@ -50,8 +50,20 @@ func (s *Session) Ask(ctx context.Context, question string) (*loop.Result, error
 
 // FollowUp 在已有会话上追问。
 func (s *Session) FollowUp(ctx context.Context, prev *loop.Result, question string) (*loop.Result, error) {
+	// 集群状态会变。沿用会话开始时的快照会让模型拿过期的 HEALTH_OK
+	// 去解释当前的 HEALTH_WARN——实际观察到模型在报告里写"与既有证据冲突"。
+	// 因此每轮追问前重取一次快照。
+	s.Refresh(ctx)
 	lr := s.newRunner(question)
 	return lr.FollowUp(ctx, prev, question)
+}
+
+// Refresh 只重取健康状态。
+//
+// 拓扑与能力在会话期间基本不变，重取只会拖慢追问；
+// 但健康状况随时会变，必须刷新，否则模型会拿过期的 HEALTH_OK 解释当前告警。
+func (s *Session) Refresh(ctx context.Context) {
+	s.d.refreshHealth(ctx, &s.snap)
 }
 
 // Report 把一轮调查结果渲染成报告。
