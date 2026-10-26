@@ -44,8 +44,19 @@ var defaultLogDirs = []string{
 // probeCapabilities 按 host-ceph → toolbox → container-exec → log-only 顺序探测。
 // 所有命令都必须能通过 Policy 校验，真实传输会在执行前拦截未登记的 argv。
 func probeCapabilities(ctx context.Context, tr transport) Capabilities {
+	return probeCapabilitiesWithProgress(ctx, tr, nil)
+}
+
+// probeCapabilitiesWithProgress 同 probeCapabilities，另在关键步骤回报进度。
+func probeCapabilitiesWithProgress(ctx context.Context, tr transport, progress func(string)) Capabilities {
+	report := func(msg string) {
+		if progress != nil {
+			progress(msg)
+		}
+	}
 	caps := Capabilities{HostTools: map[string]bool{}}
 
+	report("检查宿主机 ceph CLI")
 	// 1. 宿主机 ceph 客户端
 	if out, _, code := tr.exec(ctx, []string{"ceph", "--version"}); code == 0 {
 		if v := parseCephVersion(out); v != "" {
@@ -55,6 +66,7 @@ func probeCapabilities(ctx context.Context, tr transport) Capabilities {
 		}
 	}
 
+	report("检查 kubectl / rook toolbox")
 	// 2. kubectl + toolbox pod
 	if out, _, code := tr.exec(ctx, []string{"kubectl", "get", "pod", "-n", "rook-ceph", "-l", "app=rook-ceph-tools"}); code == 0 {
 		caps.Kubectl = true
@@ -65,6 +77,7 @@ func probeCapabilities(ctx context.Context, tr transport) Capabilities {
 	}
 
 	// 3. 容器运行时
+	report("检查容器运行时（crictl / docker）")
 	if !caps.CephCLI {
 		if out, _, code := tr.exec(ctx, []string{"crictl", "ps", "--name", "rook-ceph-mon", "-q"}); code == 0 && strings.TrimSpace(out) != "" {
 			caps.CephCLI = true
@@ -77,6 +90,7 @@ func probeCapabilities(ctx context.Context, tr transport) Capabilities {
 		}
 	}
 
+	report("检查日志目录")
 	// 4. 日志目录（总是探测，log-only 时是唯一数据源）
 	for _, dir := range defaultLogDirs {
 		if out, _, code := tr.exec(ctx, []string{"ls", "-d", dir}); code == 0 && strings.TrimSpace(out) != "" {
@@ -90,6 +104,7 @@ func probeCapabilities(ctx context.Context, tr transport) Capabilities {
 		caps.ContainerRT = "none"
 	}
 
+	report("检查宿主机工具（iostat / smartctl / lsblk / dmesg）")
 	// 5. 宿主机工具
 	for _, tool := range []string{"iostat", "smartctl", "lsblk", "dmesg"} {
 		_, _, code := tr.exec(ctx, []string{"command", "-v", tool})

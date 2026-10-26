@@ -3,6 +3,7 @@ package access
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -10,8 +11,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// executor 是执行层的可替换实现，测试时注入假实现。
+// executor 是「完整执行」的可替换实现：包含路由改写与真实发送。
+// Run 走这条路径，测试注入它即可模拟整个执行过程。
 type executor func(ctx context.Context, node string, argv []string) (Output, error)
+
+// sender 是「裸执行」的可替换实现：只把 argv 发到节点，不做路由改写。
+// 能力探测与拓扑发现使用它——它们本身就在产生路由所需的 Capabilities，
+// 若走 executor 会再次触发 rewrite，形成无限递归。
+type sender func(ctx context.Context, node string, argv []string) (Output, error)
 
 // Cluster 是接入层对外的唯一入口。
 // 工具层只与此类型交互：策略校验、路由、带超时执行、错误分类、输出截断，
@@ -19,6 +26,7 @@ type executor func(ctx context.Context, node string, argv []string) (Output, err
 type Cluster struct {
 	conn     *clusterConn
 	executor executor
+	sender   sender
 
 	// mu 保护下列所有缓存。工具层将来会并发调用 Run，
 	// 缓存必须同时支持并发读与写入。
@@ -41,11 +49,15 @@ func newCluster(cc *clusterConn) *Cluster {
 		clients: map[string]*ssh.Client{},
 	}
 	c.executor = c.realExecute
+	c.sender = c.sendViaSSH
 	return c
 }
 
-// setExecutor 替换执行层，仅用于测试注入。
+// setExecutor 替换「完整执行」层，仅用于测试注入。
 func (c *Cluster) setExecutor(e executor) { c.executor = e }
+
+// setSender 替换「裸执行」层，仅用于测试注入。
+func (c *Cluster) setSender(s sender) { c.sender = s }
 
 // Run 在指定节点上执行一条只读命令。
 // 顺序：原始 argv 过策略 → 校验节点 → 路由（必要时改写为容器 exec）
@@ -99,7 +111,7 @@ func (c *Cluster) realExecute(ctx context.Context, node string, argv []string) (
 	if err := c.conn.cfg.Policy.Check(finalArgv); err != nil {
 		return Output{}, &ToolError{Kind: KindFailed, Message: err.Error()}
 	}
-	return c.execSSH(ctx, node, BuildCommand(finalArgv))
+	return c.sender(ctx, node, finalArgv)
 }
 
 // execSSH 在已解析的节点上跑一条命令串。
@@ -282,7 +294,7 @@ func (c *Cluster) Capabilities(ctx context.Context, node string) Capabilities {
 		return caps
 	}
 	tr := &clusterTransport{cluster: c, node: node}
-	caps = probeCapabilities(ctx, tr)
+	caps = probeCapabilitiesWithProgress(ctx, tr, c.conn.cfg.OnProgress)
 	c.mu.Lock()
 	c.caps[node] = caps
 	c.mu.Unlock()
@@ -316,6 +328,9 @@ func (c *Cluster) Topology(ctx context.Context) (*Topology, error) {
 	}
 
 	tr := &clusterTransport{cluster: c, node: entry}
+	if p := c.conn.cfg.OnProgress; p != nil {
+		p(fmt.Sprintf("发现 %d 个 OSD，逐个查询所在节点与磁盘", len(nodes)))
+	}
 	topo := buildTopology(ctx, tr, fsid, nodes)
 
 	c.mu.Lock()
@@ -366,16 +381,50 @@ func (c *Cluster) Close() error {
 
 // clusterTransport 把 Cluster 适配成探测/拓扑用的 transport。
 // 探测命令的失败在探测层按退出码处理，因此这里把错误统一折算为非零退出码。
-// 它直接调用 executor 而非 Run：避免探测过程中绕过测试注入的执行层。
 type clusterTransport struct {
 	cluster *Cluster
 	node    string
 }
 
+// exec 执行一条探测命令。
+//
+// 关键约束：这里必须绕过路由（rewrite）。rewrite 需要先知道 Capabilities
+// 才能决定命令在哪执行，而探测本身就是产生 Capabilities 的过程——
+// 一旦探测走 rewrite，就会形成
+// Capabilities → probe → exec → rewrite → Capabilities 的无限递归。
+//
+// 因此探测命令一律按原样在该节点上执行：它们都是「宿主机上的只读检查」
+// （ceph --version / kubectl get / crictl ps / ls / command -v），
+// 语义上本来就属于宿主机层，不需要、也不能被改写到容器里。
+// 策略校验仍然执行，未登记的 argv 会被拒绝。
 func (t *clusterTransport) exec(ctx context.Context, argv []string) (string, string, int) {
-	out, err := t.cluster.executor(ctx, t.node, argv)
+	if err := t.cluster.conn.cfg.Policy.Check(argv); err != nil {
+		return "", err.Error(), 1
+	}
+	out, err := t.cluster.sender(ctx, t.node, argv)
 	if err != nil {
-		return out.Stdout, out.Stderr, 1
+		return out.Stdout, out.Stderr, nonZero(out.ExitCode)
 	}
 	return out.Stdout, out.Stderr, out.ExitCode
+}
+
+// sendViaSSH 是默认的 sender：加超时后经 SSH 发送。
+// sender 只服务于探测与拓扑这类快速查询，因此用较短的 ProbeTimeout；
+// 慢的集群查询走 Run，由 CommandTimeout 控制。
+func (c *Cluster) sendViaSSH(ctx context.Context, node string, argv []string) (Output, error) {
+	timeout := c.conn.cfg.ProbeTimeout
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return c.execSSH(ctx, node, BuildCommand(argv))
+}
+
+// nonZero 保证出错的命令返回非零退出码，供探测层判断「不可用」。
+func nonZero(code int) int {
+	if code == 0 {
+		return 1
+	}
+	return code
 }

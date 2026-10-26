@@ -16,10 +16,18 @@ type Config struct {
 	PrivateKeyPath string
 	KnownHostsPath string
 	CommandTimeout time.Duration
+	// ProbeTimeout 用于能力探测/拓扑发现这类「快速查询」。
+	// 探测阶段的命令本该秒回，用和诊断命令一样的 30s 只会让失败场景
+	// 白白等待成倍时间（探测最多十几次命令）。
+	ProbeTimeout   time.Duration
 	DialTimeout    time.Duration
 	MaxOutputBytes int
 	MaxConcurrency int
 	Policy         *Policy
+
+	// OnProgress 可选：接入层在耗时操作前后调用它，便于 CLI 展示进度。
+	// 只用于显示，不参与任何决策。
+	OnProgress func(string)
 
 	// authMethods 由 Dial 内部填充，供链式连接复用
 	authMethods []ssh.AuthMethod
@@ -38,6 +46,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CommandTimeout == 0 {
 		c.CommandTimeout = 30 * time.Second
+	}
+	if c.ProbeTimeout == 0 {
+		c.ProbeTimeout = 8 * time.Second
+	}
+	if c.ProbeTimeout > c.CommandTimeout {
+		c.ProbeTimeout = c.CommandTimeout
 	}
 	if c.DialTimeout == 0 {
 		c.DialTimeout = 10 * time.Second

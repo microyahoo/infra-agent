@@ -153,6 +153,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		PrivateKeyPath: doctorOpts.Key,
 		KnownHostsPath: doctorOpts.KnownHosts,
 		CommandTimeout: time.Duration(doctorOpts.SSHTimeout) * time.Second,
+		OnProgress: func(msg string) {
+			fmt.Fprintf(os.Stderr, "  · %s\n", msg)
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("接入失败: %w", err)
@@ -218,9 +221,15 @@ func runDoctorDryRun(ctx context.Context, cluster *access.Cluster) error {
 
 	fmt.Fprintf(os.Stderr, "🔎 探测节点能力 ...\n")
 	caps := cluster.Capabilities(ctx, primary)
+	fmt.Fprintf(os.Stderr, "  → 后端 %s，ceph CLI %s\n", orUnknown(caps.Backend), yesNo(caps.CephCLI))
 
 	fmt.Fprintf(os.Stderr, "🔎 发现集群拓扑 ...\n")
 	topo, topoErr := cluster.Topology(ctx)
+	if topoErr != nil {
+		fmt.Fprintf(os.Stderr, "  → 拓扑发现失败：%v\n", topoErr)
+	} else if topo != nil {
+		fmt.Fprintf(os.Stderr, "  → %d 个节点，%d 个 OSD\n", len(topo.Nodes), len(topo.OSDs))
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "SSH 接入验证（dry-run）\n")

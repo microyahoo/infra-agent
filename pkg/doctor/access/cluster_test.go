@@ -372,7 +372,7 @@ func newTestCluster(t *testing.T, handler func(argv []string) fakeSession) *Clus
 	c.nodes["node-3"] = true
 	// 注意：这里不预置 c.caps——探测结果会按节点缓存，预置会让 Capabilities 缓存语义失效，
 	// 也干扰 TestClusterCachesCapabilities。需要特定路由分支的用例自行写入 c.caps。
-	c.setExecutor(func(ctx context.Context, node string, argv []string) (Output, error) {
+	fake := func(ctx context.Context, node string, argv []string) (Output, error) {
 		if !c.nodes[node] {
 			return Output{}, unavailable("未知节点 %q", node)
 		}
@@ -384,7 +384,10 @@ func newTestCluster(t *testing.T, handler func(argv []string) fakeSession) *Clus
 			return Output{}, classifyError(nil, r.stderr, r.exit)
 		}
 		return Output{Stdout: r.stdout, Stderr: r.stderr, Node: node}, nil
-	})
+	}
+	// 两个缝都注入：Run 走 executor，探测/拓扑走 sender。
+	c.setExecutor(fake)
+	c.setSender(fake)
 	return c
 }
 
