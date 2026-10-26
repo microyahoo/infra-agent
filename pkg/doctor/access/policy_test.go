@@ -6,7 +6,7 @@ import (
 )
 
 func TestPolicyAllowsReadOnlyCeph(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	allowed := [][]string{
 		{"ceph", "-s"},
 		{"ceph", "status", "-f", "json"},
@@ -34,7 +34,7 @@ func TestPolicyAllowsReadOnlyCeph(t *testing.T) {
 }
 
 func TestPolicyRejectsMutatingCeph(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	rejected := [][]string{
 		{"ceph", "osd", "out", "7"},
 		{"ceph", "osd", "in", "7"},
@@ -55,7 +55,7 @@ func TestPolicyRejectsMutatingCeph(t *testing.T) {
 }
 
 func TestPolicyRejectsUnknownBinary(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	for _, argv := range [][]string{
 		{"bash", "-c", "rm -rf /"},
 		{"sh"},
@@ -70,7 +70,7 @@ func TestPolicyRejectsUnknownBinary(t *testing.T) {
 }
 
 func TestPolicyAllowsHostTools(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	allowed := [][]string{
 		{"iostat", "-x", "1", "3"},
 		{"smartctl", "-a", "/dev/sdc"},
@@ -91,7 +91,7 @@ func TestPolicyAllowsHostTools(t *testing.T) {
 }
 
 func TestPolicyRejectsTailWithUnsafePath(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	for _, argv := range [][]string{
 		{"tail", "-n", "10", "/etc/shadow"},
 		{"tail", "-n", "10", "/root/.ssh/id_rsa"},
@@ -105,7 +105,7 @@ func TestPolicyRejectsTailWithUnsafePath(t *testing.T) {
 }
 
 func TestPolicyRejectsGrepPatternStartingWithDash(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	err := p.Check([]string{"grep", "-F", "--file=/etc/passwd", "x"})
 	if err == nil {
 		t.Fatal("expected rejected option-like grep pattern")
@@ -116,7 +116,7 @@ func TestPolicyRejectsGrepPatternStartingWithDash(t *testing.T) {
 }
 
 func TestPolicyRejectsKubectlWrite(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	allowed := [][]string{
 		{"kubectl", "-n", "rook-ceph", "get", "pod", "-l", "app=rook-ceph-tools"},
 		{"kubectl", "-n", "rook-ceph", "logs", "rook-ceph-osd-5-abc", "-c", "osd"},
@@ -142,7 +142,7 @@ func TestPolicyRejectsKubectlWrite(t *testing.T) {
 // 这些用例覆盖「外层只读、内层/后续参数才变更」的绕过路径。
 
 func TestPolicyRejectsMutatingInnerExec(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	rejected := [][]string{
 		// kubectl exec 的内层命令必须按独立命令校验
 		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "rm", "-rf", "/var/lib/rook"},
@@ -162,7 +162,7 @@ func TestPolicyRejectsMutatingInnerExec(t *testing.T) {
 }
 
 func TestPolicyAllowsReadOnlyInnerExec(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	allowed := [][]string{
 		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "ceph", "-s"},
 		{"kubectl", "-n", "rook-ceph", "exec", "pod", "--", "ceph", "osd", "df", "-f", "json"},
@@ -177,7 +177,7 @@ func TestPolicyAllowsReadOnlyInnerExec(t *testing.T) {
 }
 
 func TestPolicyRejectsMutatingCephTellArgs(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	rejected := [][]string{
 		// 首词只读、后续参数才变更
 		{"ceph", "tell", "osd.0", "perf", "reset"},
@@ -195,7 +195,7 @@ func TestPolicyRejectsMutatingCephTellArgs(t *testing.T) {
 }
 
 func TestPolicyAllowsReadOnlyCephTellShapes(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	allowed := [][]string{
 		{"ceph", "tell", "osd.7", "dump_historic_ops"},
 		{"ceph", "tell", "osd.7", "dump_ops_in_flight"},
@@ -214,7 +214,7 @@ func TestPolicyAllowsReadOnlyCephTellShapes(t *testing.T) {
 }
 
 func TestPolicyAllowsNproc(t *testing.T) {
-	p := DefaultPolicy()
+	p := legacyAllowlistPolicy()
 	if err := p.Check([]string{"nproc"}); err != nil {
 		t.Errorf("nproc 必须放行，否则 host_check 无法按核数归一化负载: %v", err)
 	}

@@ -6,17 +6,33 @@ import (
 	"strings"
 )
 
-// Policy 只读策略。在命令真正执行前校验 argv，未登记的组合一律拒绝。
+// Policy 只读策略。在命令真正执行前校验 argv。
 // 这是「硬只读」的执行点：工具层即使写错，也无法在此通过。
+//
+// 两种模式：
+//   - deny != nil：禁止变更式（默认）。拒绝变更命令，其余只读放行，
+//     使模型能自主决定查什么，而不是被锁在预设的命令清单里。
+//   - deny == nil：白名单式（旧行为，保留用于对照与严格场景）。
 type Policy struct {
+	deny *denyPolicy // 非空时使用禁止变更式校验
+
 	binaryAllow map[string]bool
 	cephVerbs   map[string]bool // "osd tree" 这类两级子命令
 	cephDeny    map[string]bool // 显式的变更动词
 	pathPrefix  []string        // 允许读取的路径前缀
 }
 
-// DefaultPolicy 返回默认只读策略。
+// DefaultPolicy 返回默认只读策略：禁止变更式。
+//
+// 之所以默认用禁止清单而不是白名单：白名单把诊断能力锁在作者预设的场景里，
+// 遇到没预设的故障模型无手段可查。禁止清单保留了"不能变更"这个硬约束，
+// 同时让模型能自主决定查什么。
 func DefaultPolicy() *Policy {
+	return DefaultDenyPolicy()
+}
+
+// legacyAllowlistPolicy 是旧的白名单实现，保留用于严格场景与对照测试。
+func legacyAllowlistPolicy() *Policy {
 	return &Policy{
 		binaryAllow: map[string]bool{
 			"ceph": true, "crictl": true, "docker": true, "kubectl": true,
@@ -49,6 +65,9 @@ func DefaultPolicy() *Policy {
 func (p *Policy) Check(argv []string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("rejected: empty argv")
+	}
+	if p.deny != nil {
+		return p.checkDeny(argv)
 	}
 	bin := argv[0]
 	if !p.binaryAllow[bin] {

@@ -136,3 +136,24 @@ func TestHostIONormalizesDevice(t *testing.T) {
 		t.Errorf("summary = %q", res.Summary)
 	}
 }
+
+// 所有数据源失败时必须说"无法判断"，不能说"未发现异常"。
+// 后者会被模型当成"磁盘没问题"，从而排除正确的排查方向。
+func TestHostIOAllFailedDoesNotClaimHealthy(t *testing.T) {
+	tr := newFakeRunner()
+	tr.fail("node-3", []string{"iostat", "-x", "1", "3"}, &access.ToolError{Kind: access.KindUnreachable, Message: "ssh failed"})
+	tr.fail("node-3", []string{"dmesg", "-T"}, &access.ToolError{Kind: access.KindUnreachable, Message: "ssh failed"})
+	tr.caps.HostTools["smartctl"] = false
+
+	res, _, err := NewHostIO(tr).Execute(context.Background(),
+		json.RawMessage(`{"node":"node-3","device":"sdc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res.Summary, "未发现明显的磁盘层异常") {
+		t.Errorf("must not claim health when nothing was collected: %q", res.Summary)
+	}
+	if !strings.Contains(res.Summary, "无法采集") && !strings.Contains(res.Summary, "不能据此判断") {
+		t.Errorf("summary should state observation failure: %q", res.Summary)
+	}
+}

@@ -10,13 +10,13 @@ import (
 func TestDefaultRegistryHasAllTools(t *testing.T) {
 	r := DefaultRegistry(nil)
 	names := r.Names()
-	if len(names) != 13 {
-		t.Fatalf("got %d tools, want 13: %v", len(names), names)
+	if len(names) != 15 {
+		t.Fatalf("got %d tools, want 15: %v", len(names), names)
 	}
 	want := []string{
 		"ceph_status", "ceph_health", "osd_tree", "pool_info", "pg_detail", "osd_detail",
 		"daemon_log", "slow_ops", "perf_counters", "host_io", "read_log",
-		"host_check", "ceph_source_lookup",
+		"host_check", "ceph_source_lookup", "explore", "run_command",
 	}
 	for _, w := range want {
 		if _, ok := r.Get(w); !ok {

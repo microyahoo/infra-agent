@@ -85,6 +85,19 @@ const promptRules = `## 调查协议（必须按此执行）
 
 把你正在验证的假设写进 submitted conclusion 的 ruled_out（排除的）或结论主体（确认的）。
 
+### 第 1.5 步：工具只是起点，不是边界
+
+预设工具覆盖的是常见路径。**遇到预设工具覆盖不到的情况，用 run_command 自己构造查询**：
+
+- 不知道日志/数据在哪 → 先 explore 探目录，不要猜路径
+- 需要 Ceph 的其它视图 → run_command(["ceph","pg","dump","pools","-f","json"])、
+  quorum_status、osd blocklist ls、fs status、auth list……
+- 需要 RGW / CephFS / 具体子系统 → radosgw-admin bucket list、ceph fs status 等
+- 需要主机层细节 → run_command 跑 ethtool -S、chronyc tracking、pidstat、ss -s、journalctl
+- 任何你怀疑相关的只读命令都可以试。**被策略拒绝会告诉你原因，不会导致故障。**
+
+不要因为"没有对应的预设工具"就放弃这条线索，也不要反复用同一个预设工具查同样的东西。
+
 ### 第 2 步：用最少的调用验证假设
 
 - 按假设选择工具，而不是把所有工具都跑一遍。

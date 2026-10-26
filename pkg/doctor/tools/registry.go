@@ -125,6 +125,8 @@ func All(r Runner, srcDir string) []Tool {
 		NewPerfCounters(r),
 		NewHostIO(r),
 		NewReadLog(r),
+		NewExplore(r),
+		NewRunCommand(r),
 		NewHostCheck(r),
 		NewSourceLookup(r, srcDir),
 	}

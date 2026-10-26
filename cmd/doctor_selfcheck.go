@@ -48,6 +48,8 @@ func runSelfCheck(ctx context.Context, cluster *access.Cluster) error {
 	checks := []selfCheck{
 		{"ceph_status", nil},
 		{"ceph_health", nil},
+		{"explore", map[string]any{"dir": "/var/lib/rook"}},
+		{"run_command", map[string]any{"argv": []string{"ceph", "quorum_status", "-f", "json"}}},
 		{"osd_tree", nil},
 		{"pool_info", nil},
 		{"pg_detail", nil},

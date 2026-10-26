@@ -120,10 +120,20 @@ func (t *hostIOTool) Execute(ctx context.Context, args json.RawMessage) (*Result
 			fmt.Sprintf("节点 %s 没有 smartctl，无法读取 SMART；建议人工在该节点执行 smartctl -a %s 确认硬盘健康状态", node, devPath))
 	}
 
-	res.Summary = fmt.Sprintf("%s/%s：%s", node, device, ioVerdict(d))
-
-	if errs != nil && d.Iostat == "" && d.Dmesg == "" && d.Smart == "" {
-		res.Summary += "；所有采集方式均失败"
+	// 关键：所有数据源都失败时，"未发现异常"是谎言——
+	// 那是"没有数据"，不是"没有问题"。必须明确区分，否则模型会把
+	// 观测失败当成健康证据，直接排除磁盘方向。
+	allFailed := d.Iostat == "" && d.Dmesg == "" && d.Smart == ""
+	if allFailed {
+		res.Summary = fmt.Sprintf("%s/%s：无法采集任何磁盘数据（iostat/dmesg/smartctl 均失败），不能据此判断磁盘健康", node, device)
+		if len(errs) > 0 {
+			res.Summary += "；原因：" + clipText(strings.Join(errs, "；"), 200)
+		}
+	} else {
+		res.Summary = fmt.Sprintf("%s/%s：%s", node, device, ioVerdict(d))
+		if len(errs) > 0 {
+			res.Summary += "（部分数据源失败：" + clipText(strings.Join(errs, "；"), 120) + "）"
+		}
 	}
 	if len(errs) > 0 {
 		res.Hints = append(res.Hints, "部分数据源不可用（"+strings.Join(errs, "；")+"）")
