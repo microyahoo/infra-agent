@@ -145,8 +145,11 @@ func (d *Doctor) Run(ctx context.Context, task Task) (*Report, error) {
 		OnProgress:   d.cfg.OnProgress,
 	})
 	res, err := lr.Run(ctx, loop.Task{ClusterID: snap.ClusterID, Question: question})
+	return d.buildReport(runner, snap, startedAt, res, err)
+}
 
-	// 4. 把快照证据与调查证据合并为一条链，并按新 ID 重映射结论引用。
+// buildReport 把一轮调查结果整理成报告：合并快照证据、重映射引用。
+func (d *Doctor) buildReport(runner *clusterRunner, snap snapshotResult, startedAt time.Time, res *loop.Result, runErr error) (*report.Report, error) {
 	var chain *loop.Chain
 	var conclusion *loop.Conclusion
 	if res != nil && res.Chain != nil {
@@ -158,32 +161,26 @@ func (d *Doctor) Run(ctx context.Context, task Task) (*Report, error) {
 		}
 	}
 
-	if err != nil {
-		// 模型或循环出错：若已收集到证据，仍给出一份带证据的“无结论”报告。
+	if runErr != nil {
 		if chain == nil || chain.Len() == 0 {
-			return nil, err
+			return nil, runErr
 		}
-		rep, berr := report.Build(report.Input{
+		return report.Build(report.Input{
 			ClusterID:    snapshotClusterID(snap),
 			Health:       snap.Health,
 			Capabilities: snap.Capabilities.Backend,
 			StartedAt:    startedAt,
 			Duration:     time.Since(startedAt),
 			Chain:        chain,
-			Notes:        d.notes(snap, err),
+			Notes:        d.notes(snap, runErr),
 		})
-		if berr != nil {
-			return nil, err
-		}
-		return rep, nil
 	}
 
-	var rounds, toolCalls int
+	rounds, toolCalls := 0, 0
 	if res != nil {
-		rounds = res.Rounds
-		toolCalls = res.ToolCalls
+		rounds, toolCalls = res.Rounds, res.ToolCalls
 	}
-	rep, berr := report.Build(report.Input{
+	return report.Build(report.Input{
 		ClusterID:    snapshotClusterID(snap),
 		Health:       snapshotHealth(snap),
 		Capabilities: snap.Capabilities.Backend,
@@ -195,11 +192,12 @@ func (d *Doctor) Run(ctx context.Context, task Task) (*Report, error) {
 		ToolCalls:    toolCalls,
 		Notes:        d.notes(snap, nil),
 	})
-	if berr != nil {
-		return nil, fmt.Errorf("构建报告失败: %w", berr)
-	}
-	return rep, nil
 }
+
+var (
+	errNoCluster = fmt.Errorf("诊断缺少集群连接")
+	errNoModel   = fmt.Errorf("诊断缺少模型")
+)
 
 // initialEvidenceRound 是快照证据的轮次：负数表示发生在调查开始之前。
 // （证据链的 Add 在轮次为 0 时会填当前轮次，因此不能用 0。）

@@ -26,7 +26,9 @@ func TestProbePicksHostCephFirst(t *testing.T) {
 func TestProbeFallsBackToToolbox(t *testing.T) {
 	tr := &fakeTransport{
 		responses: map[string]fakeResp{
-			"ceph --version": {exit: 127, stderr: "command not found"},
+			"ceph --version":                                      {exit: 127, stderr: "command not found"},
+			"kubectl get ns -o name":                              {stdout: "namespace/kube-system\nnamespace/rook-ceph\n"},
+			"kubectl -n rook-ceph get cephcluster -o name":        {stdout: "cephcluster.ceph.rook.io/rook-ceph\n"},
 			"kubectl get pod -n rook-ceph -l app=rook-ceph-tools": {stdout: "rook-ceph-tools-abc   1/1   Running\n"},
 		},
 	}
@@ -42,7 +44,9 @@ func TestProbeFallsBackToToolbox(t *testing.T) {
 func TestProbeFallsBackToContainerExec(t *testing.T) {
 	tr := &fakeTransport{
 		responses: map[string]fakeResp{
-			"ceph --version": {exit: 127},
+			"ceph --version":                                      {exit: 127},
+			"kubectl get ns -o name":                              {stdout: "namespace/kube-system\nnamespace/rook-ceph\n"},
+			"kubectl -n rook-ceph get cephcluster -o name":        {stdout: "cephcluster.ceph.rook.io/rook-ceph\n"},
 			"kubectl get pod -n rook-ceph -l app=rook-ceph-tools": {exit: 1},
 			"crictl ps --name rook-ceph-mon -q":                   {stdout: "abc123\n"},
 		},
@@ -59,7 +63,9 @@ func TestProbeFallsBackToContainerExec(t *testing.T) {
 func TestProbeFallsBackToLogOnly(t *testing.T) {
 	tr := &fakeTransport{
 		responses: map[string]fakeResp{
-			"ceph --version": {exit: 127},
+			"ceph --version":                                      {exit: 127},
+			"kubectl get ns -o name":                              {stdout: "namespace/kube-system\nnamespace/rook-ceph\n"},
+			"kubectl -n rook-ceph get cephcluster -o name":        {stdout: "cephcluster.ceph.rook.io/rook-ceph\n"},
 			"kubectl get pod -n rook-ceph -l app=rook-ceph-tools": {exit: 1},
 			"crictl ps --name rook-ceph-mon -q":                   {exit: 1},
 			"docker ps --filter name=rook-ceph-mon -q":            {exit: 127},
@@ -157,5 +163,68 @@ func TestProbeFindsRookSingularLogDir(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("LogDirs = %v, want to include the singular rook log dir", caps.LogDirs)
+	}
+}
+
+// 不假设命名空间叫 rook-ceph：应该从集群里发现真实位置。
+func TestProbeDiscoversRookNamespace(t *testing.T) {
+	tr := &fakeTransport{
+		responses: map[string]fakeResp{
+			"ceph --version":                                  {stdout: "ceph version 16.2.14 (x) pacific (stable)"},
+			"kubectl get ns -o name":                          {stdout: "namespace/kube-system\nnamespace/storage-prod\nnamespace/rook-ceph\n"},
+			"kubectl -n kube-system get cephcluster -o name":  {exit: 1},
+			"kubectl -n storage-prod get cephcluster -o name": {stdout: "cephcluster.ceph.rook.io/my-cluster\n"},
+		},
+	}
+	caps := probeCapabilities(context.Background(), tr)
+	if caps.RookNamespace != "storage-prod" {
+		t.Errorf("RookNamespace = %q, want storage-prod", caps.RookNamespace)
+	}
+	if caps.CephCluster != "my-cluster" {
+		t.Errorf("CephCluster = %q, want my-cluster", caps.CephCluster)
+	}
+	if got := caps.Namespace(); got != "storage-prod" {
+		t.Errorf("Namespace() = %q", got)
+	}
+}
+
+// 集群里没有 Rook 时（例如纯 cephadm），不应误判。
+func TestProbeNoRookNamespace(t *testing.T) {
+	tr := &fakeTransport{
+		responses: map[string]fakeResp{
+			"ceph --version":                                 {stdout: "ceph version 18.2.4 (x) reef (stable)"},
+			"kubectl get ns -o name":                         {stdout: "namespace/kube-system\n"},
+			"kubectl -n kube-system get cephcluster -o name": {exit: 1},
+		},
+	}
+	caps := probeCapabilities(context.Background(), tr)
+	if caps.RookNamespace != "" {
+		t.Errorf("RookNamespace = %q, want empty", caps.RookNamespace)
+	}
+	if got := caps.Namespace(); got != "rook-ceph" {
+		t.Errorf("Namespace() fallback = %q", got)
+	}
+}
+
+// 日志目录应包含按发现的命名空间派生的路径。
+func TestProbeDerivesLogDirFromNamespace(t *testing.T) {
+	tr := &fakeTransport{
+		responses: map[string]fakeResp{
+			"ceph --version":         {stdout: "ceph version 16.2.14 (x) pacific (stable)"},
+			"kubectl get ns -o name": {stdout: "namespace/storage-prod\n"},
+			"kubectl -n storage-prod get cephcluster -o name": {stdout: "cephcluster.ceph.rook.io/c1\n"},
+			"ls -d /var/lib/rook/storage-prod/log":            {stdout: "/var/lib/rook/storage-prod/log\n"},
+			"ls /var/lib/rook/storage-prod/log":               {stdout: "ceph-osd.1.log\n"},
+		},
+	}
+	caps := probeCapabilities(context.Background(), tr)
+	found := false
+	for _, d := range caps.LogDirs {
+		if d == "/var/lib/rook/storage-prod/log" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("LogDirs = %v, want to include the namespace-derived path", caps.LogDirs)
 	}
 }

@@ -41,6 +41,7 @@ type doctorOptions struct {
 	LLMRetries   int
 	DryRun       bool
 	SelfCheck    bool
+	Interactive  bool
 }
 
 var doctorOpts doctorOptions
@@ -104,6 +105,7 @@ func init() {
 	f.IntVar(&doctorOpts.SSHTimeout, "ssh-timeout", 30, "单条命令超时（秒）")
 	f.BoolVar(&doctorOpts.DryRun, "dry-run", false, "仅连接并探测能力与拓扑，不调用模型")
 	f.BoolVar(&doctorOpts.SelfCheck, "self-check", false, "在真实集群上逐个运行诊断工具（不调用模型），用于验证解析是否正确")
+	f.BoolVar(&doctorOpts.Interactive, "interactive", false, "诊断结束后进入交互模式，可以继续追问")
 	f.IntVar(&doctorOpts.LLMRetries, "llm-retries", -1, "模型请求失败时的重试次数（-1 表示用默认值 2）")
 
 	_ = doctorCmd.MarkFlagRequired("host")
@@ -195,6 +197,10 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "  · %s\n", msg)
 		},
 	})
+
+	if doctorOpts.Interactive {
+		return runInteractiveSession(ctx, d)
+	}
 
 	rep, err := d.Run(ctx, doctor.Task{Question: doctorOpts.Question})
 	if err != nil {

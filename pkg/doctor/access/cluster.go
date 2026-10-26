@@ -181,7 +181,7 @@ func (c *Cluster) rewrite(ctx context.Context, node string, argv []string) ([]st
 		if err != nil {
 			return nil, err
 		}
-		rewritten := append([]string{"kubectl", "-n", "rook-ceph", "exec", pod, "--"}, argv...)
+		rewritten := append([]string{"kubectl", "-n", caps.Namespace(), "exec", pod, "--"}, argv...)
 		return rewritten, nil
 	case "container-exec":
 		id, err := c.monContainerID(ctx, node, caps.ContainerRT)
@@ -203,7 +203,8 @@ func (c *Cluster) toolboxPodName(ctx context.Context, node string) (string, erro
 	if pod != "" {
 		return pod, nil
 	}
-	argv := []string{"kubectl", "-n", "rook-ceph", "get", "pod",
+	ns := c.Capabilities(ctx, node).Namespace()
+	argv := []string{"kubectl", "-n", ns, "get", "pod",
 		"-l", "app=rook-ceph-tools", "-o", "jsonpath={.items[0].metadata.name}"}
 	out, err := c.Run(ctx, node, argv)
 	if err != nil {

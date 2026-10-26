@@ -320,3 +320,55 @@ func TestLoopUnknownToolDoesNotCrash(t *testing.T) {
 		t.Errorf("unknown tool should not create evidence, got %d", res.Chain.Len())
 	}
 }
+
+// 续聊必须保留上一轮的对话与证据，并由新一轮问题驱动。
+func TestFollowUpKeepsHistoryAndEvidence(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "probe", res: &tools.Result{Summary: "第一次查到的结果"}})
+
+	model := &scriptedModel{replies: []llm.Reply{
+		// 第一轮：查一次，给结论
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: "{}"}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: ConcludeToolName, Args: conclusionJSON("low", []string{"ev-001"})}}},
+		// 第二轮（续聊）：直接给结论
+		{ToolCalls: []llm.ToolCall{{ID: "c3", Name: ConcludeToolName, Args: conclusionJSON("medium", nil)}}},
+	}}
+
+	r := newTestLoop(t, model, reg)
+	first, err := r.Run(context.Background(), Task{Question: "集群怎么样"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Chain.Len() != 1 {
+		t.Fatalf("first chain = %d", first.Chain.Len())
+	}
+	if len(first.Messages) == 0 {
+		t.Fatal("first run must persist messages for follow-up")
+	}
+
+	second, err := r.FollowUp(context.Background(), first, "那 osd.92 呢")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Chain.Len() != 1 {
+		t.Errorf("follow-up must reuse the same chain, got %d evidences", second.Chain.Len())
+	}
+	if second.Conclusion == nil || second.Conclusion.Severity != "medium" {
+		t.Errorf("follow-up conclusion = %+v", second.Conclusion)
+	}
+	// 第二轮发给模型的消息里必须包含第一轮的问题与工具结果
+	secondCall := model.seenMsgs[len(model.seenMsgs)-1]
+	var joined strings.Builder
+	for _, m := range secondCall {
+		joined.WriteString(m.Content)
+	}
+	if !strings.Contains(joined.String(), "集群怎么样") {
+		t.Error("follow-up lost the original question")
+	}
+	if !strings.Contains(joined.String(), "第一次查到的结果") {
+		t.Error("follow-up lost the previous tool result")
+	}
+	if !strings.Contains(joined.String(), "那 osd.92 呢") {
+		t.Error("follow-up question missing")
+	}
+}

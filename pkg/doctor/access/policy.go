@@ -40,7 +40,8 @@ func DefaultPolicy() *Policy {
 			"osd set": true, "osd unset": true, "config set": true, "config rm": true,
 			"injectargs": true, "pg scrub": true, "pg repair": true, "pg deep-scrub": true,
 		},
-		pathPrefix: []string{"/var/log/ceph", "/var/lib/rook/rook-ceph/log", "/var/lib/rook/rook-ceph/logs", "/var/lib/rook/rook-ceph"},
+		// /var/lib/rook 覆盖任意命名空间下的 Rook 日志目录（/var/lib/rook/<ns>/log）。
+		pathPrefix: []string{"/var/log/ceph", "/var/lib/rook"},
 	}
 }
 

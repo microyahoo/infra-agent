@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -303,4 +304,68 @@ func TestMergeChainsRemapsIDs(t *testing.T) {
 	if c.EvidenceRefs[0] != "ev-001" {
 		t.Error("remapConclusion must not mutate the original conclusion")
 	}
+}
+
+// 会话应复用同一份快照与工具表，追问时不再重复探测。
+func TestSessionReusesSnapshotAcrossTurns(t *testing.T) {
+	fc := newFakeCluster()
+	topoCalls := 0
+	counting := &countingCluster{fakeCluster: fc, topoCalls: &topoCalls}
+
+	model := &seqModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: loop.ConcludeToolName, Args: conclusionArgs("low")}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: loop.ConcludeToolName, Args: conclusionArgs("medium")}}},
+	}}
+
+	d := New(Config{Cluster: counting, Model: model})
+	sess, err := d.OpenSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.Ask(context.Background(), "第一次"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := sess.FollowUp(context.Background(), newSessionResult(t), "第二次")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Conclusion == nil || second.Conclusion.Severity != "medium" {
+		t.Errorf("follow-up conclusion = %+v", second.Conclusion)
+	}
+	// 快照只做一次：拓扑在 OpenSession 时已确定，追问不应再次探测
+	if topoCalls > 1 {
+		t.Errorf("topology probed %d times, want 1 (session should reuse the snapshot)", topoCalls)
+	}
+}
+
+// countingCluster 统计拓扑调用次数。
+type countingCluster struct {
+	*fakeCluster
+	topoCalls *int
+}
+
+func (c *countingCluster) Topology(ctx context.Context) (*access.Topology, error) {
+	*c.topoCalls++
+	return c.fakeCluster.Topology(ctx)
+}
+
+// seqModel 按顺序返回预设回复。
+type seqModel struct {
+	replies []llm.Reply
+	i       int
+}
+
+func (m *seqModel) Chat(_ context.Context, _ []llm.Message, _ []llm.ToolSpec) (llm.Reply, error) {
+	if m.i >= len(m.replies) {
+		return llm.Reply{}, fmt.Errorf("replies exhausted")
+	}
+	r := m.replies[m.i]
+	m.i++
+	return r, nil
+}
+
+// newSessionResult 构造一个空的上轮结果，用于续聊测试。
+func newSessionResult(t *testing.T) *loop.Result {
+	t.Helper()
+	return &loop.Result{Chain: loop.NewChain()}
 }

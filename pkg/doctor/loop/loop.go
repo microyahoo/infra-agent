@@ -48,6 +48,9 @@ type RunnerConfig struct {
 }
 
 // Result 是一次排查的结果。
+//
+// Messages 保留完整对话（含工具调用与结果），续聊时原样传回，
+// 使模型能引用之前查过的事实，而不是从头再来一遍。
 type Result struct {
 	Conclusion      *Conclusion
 	Chain           *Chain
@@ -55,6 +58,9 @@ type Result struct {
 	ToolCalls       int
 	BudgetExhausted bool
 	Usage           llm.Usage
+
+	// Messages 是本次会话的完整消息序列，仅用于续聊（FollowUp）。
+	Messages []llm.Message
 }
 
 // SessionRunner 驱动模型与工具之间的多轮往返，直到模型提交结论或预算耗尽。
@@ -111,16 +117,41 @@ func (r *SessionRunner) Run(ctx context.Context, task Task) (*Result, error) {
 		reg = tools.NewRegistry()
 	}
 
-	res := &Result{Chain: NewChain()}
-	chain := res.Chain
-
-	// 发给模型的工具列表 = 注册的工具 + submit_conclusion。
-	specs := r.toolSpecs(reg)
-
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: r.systemPrompt},
 		{Role: llm.RoleUser, Content: task.Question},
 	}
+	return r.runLoop(ctx, reg, msgs, &Result{Chain: NewChain()})
+}
+
+// FollowUp 在已有会话上继续追问。
+//
+// 保留此前的对话与证据链，因此模型能看到上次查到的内容，
+// 用户也可以就同一个集群连续追问（"那 osd.92 呢？"、"先看网络"）。
+// 预算按新一轮重新计算，避免长会话耗尽后无法再问。
+func (r *SessionRunner) FollowUp(ctx context.Context, prev *Result, question string) (*Result, error) {
+	if prev == nil {
+		return r.Run(ctx, Task{Question: question})
+	}
+	reg := r.registry
+	if reg == nil {
+		reg = tools.NewRegistry()
+	}
+
+	msgs := append([]llm.Message{}, prev.Messages...)
+	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: question})
+
+	res := &Result{Chain: prev.Chain}
+	if res.Chain == nil {
+		res.Chain = NewChain()
+	}
+	return r.runLoop(ctx, reg, msgs, res)
+}
+
+// runLoop 是首轮与续聊共用的调查内核。
+func (r *SessionRunner) runLoop(ctx context.Context, reg *tools.Registry, msgs []llm.Message, res *Result) (*Result, error) {
+	chain := res.Chain
+	specs := r.toolSpecs(reg)
 
 	// 计数：per-tool 次数以证据链为准，另用映射统计 submit_conclusion 之外的尝试。
 	perTool := make(map[string]int)
@@ -147,6 +178,7 @@ func (r *SessionRunner) Run(ctx context.Context, task Task) (*Result, error) {
 			if c, ok := r.tryPlainConclusion(reply.Content, chain); ok {
 				res.Conclusion = c
 				msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: reply.Content})
+				res.Messages = msgs
 				r.progress("模型以文本形式给出了合法结论，已采纳")
 				return res, nil
 			}
@@ -188,6 +220,7 @@ func (r *SessionRunner) Run(ctx context.Context, task Task) (*Result, error) {
 					continue
 				}
 				msgs = append(msgs, llm.ToolResultMessage(tc.ID, "结论已接收。"))
+				res.Messages = msgs
 				res.Conclusion = c
 				chain.MarkCall(ConcludeToolName, args)
 				return res, nil
@@ -262,7 +295,11 @@ func (r *SessionRunner) Run(ctx context.Context, task Task) (*Result, error) {
 	res.BudgetExhausted = true
 	r.progress("预算已耗尽，要求模型基于现有证据给出结论")
 
-	c, _, err := r.forceConclusion(ctx, msgs, chain, res)
+	res.Messages = msgs
+	c, finalMsgs, err := r.forceConclusion(ctx, msgs, chain, res)
+	if finalMsgs != nil {
+		res.Messages = finalMsgs
+	}
 	if err != nil {
 		return res, err
 	}

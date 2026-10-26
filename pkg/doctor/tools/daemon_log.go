@@ -123,11 +123,12 @@ func (t *daemonLogTool) Execute(ctx context.Context, args json.RawMessage) (*Res
 		//   osd → ceph-osd-id=<id>
 		//   mon/mgr 等 → app=rook-ceph-<daemon>
 		sel, describe := rookLogSelector(daemon, id)
+		ns := caps.Namespace()
 		attempts = append(attempts, logAttempt{
 			source: logSourceKubectlLogs,
 			detail: describe,
 			// Rook 的 osd pod 有 osd / log-collector 两个容器，必须指定容器名。
-			argv: []string{"kubectl", "-n", "rook-ceph", "logs", "-l", sel,
+			argv: []string{"kubectl", "-n", ns, "logs", "-l", sel,
 				"-c", rookLogContainer(daemon), "--tail", fmt.Sprint(lines)},
 		})
 	}

@@ -17,6 +17,20 @@ type Capabilities struct {
 	ContainerRT string // crictl / docker / none
 	LogDirs     []string
 	HostTools   map[string]bool
+
+	// RookNamespace / CephCluster 是自动发现的 Rook 部署位置。
+	// 不假设命名空间叫 rook-ceph——多套集群的命名各不相同。
+	// 非 Rook 部署时为空。
+	RookNamespace string
+	CephCluster   string
+}
+
+// namespace 返回可用于 kubectl 的命名空间，未发现时回退到 rook-ceph。
+func (c Capabilities) Namespace() string {
+	if c.RookNamespace != "" {
+		return c.RookNamespace
+	}
+	return "rook-ceph"
 }
 
 // transport 是探测需要的执行能力，便于测试注入。
@@ -48,6 +62,61 @@ var logDirCandidates = []string{
 	"/var/log/ceph",
 	"/var/lib/rook/rook-ceph/log",
 	"/var/lib/rook/rook-ceph/logs",
+}
+
+// discoverRook 找出集群里 Rook 部署在哪个命名空间。
+//
+// 做法：列出所有命名空间 → 逐个查有没有 CephCluster CR → 第一个命中的即是。
+// 这套查询全部只读，且不依赖任何预先配置。
+func discoverRook(ctx context.Context, tr transport) (namespace, clusterName string, kubectlOK bool) {
+	out, _, code := tr.exec(ctx, []string{"kubectl", "get", "ns", "-o", "name"})
+	if code != 0 {
+		return "", "", false
+	}
+	kubectlOK = true
+
+	var namespaces []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if ns, ok := strings.CutPrefix(line, "namespace/"); ok {
+			namespaces = append(namespaces, ns)
+		}
+	}
+
+	for _, ns := range namespaces {
+		cout, _, ccode := tr.exec(ctx, []string{"kubectl", "-n", ns, "get", "cephcluster", "-o", "name"})
+		if ccode != 0 {
+			continue
+		}
+		name := firstNonEmptyLine(cout)
+		if name == "" {
+			continue
+		}
+		name = strings.TrimPrefix(name, "cephcluster.ceph.rook.io/")
+		name = strings.TrimPrefix(name, "cephcluster/")
+		return ns, name, true
+	}
+	return "", "", kubectlOK
+}
+
+// firstNonEmptyLine 返回第一个非空行。
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if l := strings.TrimSpace(line); l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+// logDirCandidatesFor 在固定候选之外，补上按发现的命名空间派生的路径。
+// Rook 把日志放在 /var/lib/rook/<namespace>/log。
+func logDirCandidatesFor(caps Capabilities) []string {
+	dirs := append([]string{}, logDirCandidates...)
+	if ns := caps.RookNamespace; ns != "" {
+		dirs = append([]string{"/var/lib/rook/" + ns + "/log"}, dirs...)
+	}
+	return dirs
 }
 
 // dirExists 判断远端目录是否存在。
@@ -101,13 +170,21 @@ func probeCapabilitiesWithProgress(ctx context.Context, tr transport, progress f
 		}
 	}
 
-	report("检查 kubectl / rook toolbox")
-	// 2. kubectl + toolbox pod
-	if out, _, code := tr.exec(ctx, []string{"kubectl", "get", "pod", "-n", "rook-ceph", "-l", "app=rook-ceph-tools"}); code == 0 {
-		caps.Kubectl = true
-		if !caps.CephCLI && strings.Contains(out, "Running") {
-			caps.CephCLI = true
-			caps.Backend = "toolbox"
+	report("发现 Rook 部署位置")
+	// 2. 自动发现 Rook 的命名空间与 CephCluster 名，
+	//    后续所有 kubectl 操作都基于发现结果，而不是硬编码 rook-ceph。
+	ns, cluster, kubectlOK := discoverRook(ctx, tr)
+	caps.RookNamespace = ns
+	caps.CephCluster = cluster
+	caps.Kubectl = kubectlOK
+
+	report("检查 rook toolbox")
+	if kubectlOK {
+		if out, _, code := tr.exec(ctx, []string{"kubectl", "get", "pod", "-n", caps.Namespace(), "-l", "app=rook-ceph-tools"}); code == 0 {
+			if !caps.CephCLI && strings.Contains(out, "Running") {
+				caps.CephCLI = true
+				caps.Backend = "toolbox"
+			}
 		}
 	}
 
@@ -131,7 +208,12 @@ func probeCapabilitiesWithProgress(ctx context.Context, tr transport, progress f
 	// 先试固定候选；再确认候选目录里确实有 ceph 日志文件——
 	// /var/log/ceph 在 cephadm 环境下可能只放 cephadm.log，
 	// 真正的 daemon 日志在别处，此时不应把它当作可用来源。
-	for _, dir := range logDirCandidates {
+	seen := map[string]bool{}
+	for _, dir := range logDirCandidatesFor(caps) {
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
 		if !dirExists(ctx, tr, dir) {
 			continue
 		}
