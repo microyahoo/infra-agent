@@ -120,7 +120,8 @@ type wireRequest struct {
 
 type wireResponse struct {
 	Choices []struct {
-		Message struct {
+		FinishReason string `json:"finish_reason"`
+		Message      struct {
 			Role      string         `json:"role"`
 			Content   *string        `json:"content"` // 工具调用时通常为 null
 			ToolCalls []wireToolCall `json:"tool_calls"`
@@ -260,7 +261,7 @@ func (c *Client) doOnce(ctx context.Context, url string, body []byte) (Reply, bo
 	reply := Reply{Usage: Usage{
 		PromptTokens:     wire.Usage.PromptTokens,
 		CompletionTokens: wire.Usage.CompletionTokens,
-	}}
+	}, FinishReason: FinishReason(wire.Choices[0].FinishReason)}
 	if msg.Content != nil {
 		reply.Content = *msg.Content
 	}

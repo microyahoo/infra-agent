@@ -45,11 +45,30 @@ type Usage struct {
 	CompletionTokens int
 }
 
+// FinishReason 是模型停止生成的原因。
+//
+// 最重要的取值是 FinishReasonLength（"length"）：回复被 max_tokens 截断。
+// 截断与"模型说完了"是两种完全不同的情况，调用方必须区别对待——
+// 把截断当成格式错误，只会让模型反复重试同样超长的输出。
+type FinishReason string
+
+const (
+	FinishReasonStop      FinishReason = "stop"   // 正常结束
+	FinishReasonLength    FinishReason = "length" // 触及 max_tokens 被截断
+	FinishReasonToolCalls FinishReason = "tool_calls"
+	FinishReasonFiltered  FinishReason = "content_filter"
+	FinishReasonUnknown   FinishReason = ""
+)
+
+// Truncated 判断这次回复是否因长度限制被截断。
+func (f FinishReason) Truncated() bool { return f == FinishReasonLength }
+
 // Reply 是模型的一次回复。
 type Reply struct {
-	Content   string
-	ToolCalls []ToolCall
-	Usage     Usage
+	Content      string
+	ToolCalls    []ToolCall
+	Usage        Usage
+	FinishReason FinishReason
 }
 
 // ToolResultMessage 构造一条工具结果消息，callID 必须与模型给出的 ToolCall.ID 一致。

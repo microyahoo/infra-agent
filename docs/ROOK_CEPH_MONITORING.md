@@ -195,7 +195,7 @@ infra-agent patrol start --interval 15m
 ### 启用 Rook Ceph 监控
 
 ```yaml
-# config/default.yaml 或 ~/.infra-agent.yaml
+# ~/.infra-agent.yaml
 
 analyzers:
   enabled:

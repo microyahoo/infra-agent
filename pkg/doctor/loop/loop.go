@@ -27,6 +27,17 @@ const (
 	maxForceAttempts = 3
 )
 
+// truncatedContentHint 在回复被 max_tokens 截断（且无工具调用）时发给模型。
+// 必须点明是长度问题，否则模型会把截断误判成格式错误并原样重试。
+const truncatedContentHint = "你的上一条回复因为超出输出长度上限而被截断了，内容不完整。" +
+	"请不要重复同样长度的输出：先用一句话说明当前判断，" +
+	"然后直接调用 " + ConcludeToolName + " 提交精简的结论（headline 不超过 100 字）。" +
+	"如果还需要更多信息，请只发起必要的工具调用。"
+
+// truncatedArgsHint 在工具调用参数被截断时发给模型。
+const truncatedArgsHint = "你的工具调用参数因为超出输出长度上限而被截断了，JSON 不完整。" +
+	"请缩小本次调用的参数范围（例如减少 osd_ids 的数量、降低 lines 行数），然后重新调用。"
+
 // 压缩后的工具结果标记。
 const compressedMarker = "[已压缩，完整输出见证据链]"
 
@@ -58,6 +69,10 @@ type Result struct {
 	ToolCalls       int
 	BudgetExhausted bool
 	Usage           llm.Usage
+
+	// TruncatedReplies 统计因 max_tokens 被截断的回复次数。
+	// 持续上升说明 max_tokens 偏小，或模型在输出冗长内容。
+	TruncatedReplies int
 
 	// Messages 是本次会话的完整消息序列，仅用于续聊（FollowUp）。
 	Messages []llm.Message
@@ -175,6 +190,15 @@ func (r *SessionRunner) runLoop(ctx context.Context, reg *tools.Registry, msgs [
 		// 模型未发起工具调用：要求其使用 submit_conclusion；
 		// 若正文恰好是合法结论 JSON，则直接采纳。
 		if len(reply.ToolCalls) == 0 {
+			// 被 max_tokens 截断：内容不完整，不能当作"格式错误"要求重写，
+			// 必须明确告知是长度限制，否则模型会用同样长度再试一次。
+			if reply.FinishReason.Truncated() {
+				msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: reply.Content})
+				msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: truncatedContentHint})
+				res.TruncatedReplies++
+				r.progress(fmt.Sprintf("模型回复被长度限制截断（第 %d 次），已要求精简输出", res.TruncatedReplies))
+				continue
+			}
 			if c, ok := r.tryPlainConclusion(reply.Content, chain); ok {
 				res.Conclusion = c
 				msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: reply.Content})
@@ -189,6 +213,16 @@ func (r *SessionRunner) runLoop(ctx context.Context, reg *tools.Registry, msgs [
 					" 工具提交结构化结论；若仍需信息，请继续调用查询工具。",
 			})
 			r.progress("模型未调用工具，已要求使用 submit_conclusion")
+			continue
+		}
+
+		// 工具调用被截断时，arguments 必然是残缺的 JSON，
+		// 交给下面的解析逻辑只会得到"参数解析失败"，掩盖真实原因。
+		if reply.FinishReason.Truncated() && len(reply.ToolCalls) > 0 {
+			res.TruncatedReplies++
+			msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: reply.Content})
+			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: truncatedArgsHint})
+			r.progress(fmt.Sprintf("工具调用参数被长度限制截断（第 %d 次），已要求精简", res.TruncatedReplies))
 			continue
 		}
 
@@ -474,6 +508,16 @@ func (r *SessionRunner) forceConclusion(ctx context.Context, msgs []llm.Message,
 		res.Usage = usage
 		if err != nil {
 			lastErr = fmt.Errorf("第 %d 次收尾调用模型失败: %w", attempt, err)
+			continue
+		}
+
+		if reply.FinishReason.Truncated() {
+			// 收尾阶段最容易被截断：这一步要一次性输出整份结论 JSON。
+			res.TruncatedReplies++
+			m = append(m, llm.Message{Role: llm.RoleAssistant, Content: reply.Content})
+			m = append(m, llm.Message{Role: llm.RoleUser, Content: truncatedContentHint})
+			lastErr = fmt.Errorf("第 %d 次收尾回复被长度限制截断", attempt)
+			r.progress("收尾回复被长度限制截断，已要求精简后重试")
 			continue
 		}
 

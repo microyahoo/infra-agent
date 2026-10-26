@@ -26,8 +26,10 @@ WORKDIR /app
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/bin/infra-agent /usr/local/bin/infra-agent
 
-# 复制默认配置
-COPY config/default.yaml /etc/infra-agent/config.yaml
+# 复制配置示例，供用户参考。
+# 程序只从 --config、~/.infra-agent.yaml 与 ./.infra-agent.yaml 读取配置，
+# 因此这份文件不会被自动加载——需要时复制它并修改。
+COPY config/doctor.example.yaml /etc/infra-agent/doctor.example.yaml
 
 # 创建数据目录
 RUN mkdir -p /var/lib/infra-agent/history

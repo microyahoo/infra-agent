@@ -178,9 +178,15 @@ func (d *Doctor) buildReport(runner *clusterRunner, snap snapshotResult, started
 		})
 	}
 
-	rounds, toolCalls := 0, 0
+	rounds, toolCalls, truncated := 0, 0, 0
 	if res != nil {
-		rounds, toolCalls = res.Rounds, res.ToolCalls
+		rounds, toolCalls, truncated = res.Rounds, res.ToolCalls, res.TruncatedReplies
+	}
+	notes := d.notes(snap, nil)
+	if truncated > 0 {
+		// 截断会显著影响结论质量，必须让读者知道。
+		notes = append(notes, fmt.Sprintf(
+			"调查过程中有 %d 次模型回复因 max_tokens 被截断，结论可能不完整；可调大 doctor.llm.max_tokens", truncated))
 	}
 	return report.Build(report.Input{
 		ClusterID:    snapshotClusterID(snap),
@@ -192,7 +198,7 @@ func (d *Doctor) buildReport(runner *clusterRunner, snap snapshotResult, started
 		Conclusion:   conclusion,
 		Rounds:       rounds,
 		ToolCalls:    toolCalls,
-		Notes:        d.notes(snap, nil),
+		Notes:        notes,
 	})
 }
 

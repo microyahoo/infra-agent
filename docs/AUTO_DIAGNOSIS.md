@@ -62,7 +62,7 @@ infra-agent analyze --explain --auto-diagnose --notify
 ### 配置文件
 
 ```yaml
-# config/default.yaml
+# ~/.infra-agent.yaml
 
 # 自动诊断配置
 diagnosis:

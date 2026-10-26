@@ -242,3 +242,56 @@ func TestClientNegativeRetriesUsesDefault(t *testing.T) {
 		t.Errorf("default retry should have retried, attempts = %d", attempts)
 	}
 }
+
+// finish_reason 必须被解析出来，否则上层无法区分"说完了"和"被截断"。
+func TestClientParsesFinishReason(t *testing.T) {
+	cases := map[string]FinishReason{
+		`{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"半截"}}]}`:      FinishReasonLength,
+		`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"完整"}}]}`:        FinishReasonStop,
+		`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[]}}]}`: FinishReasonToolCalls,
+		`{"choices":[{"message":{"role":"assistant","content":"无字段"}}]}`:                              FinishReasonUnknown,
+	}
+	for body, want := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body))
+		}))
+		c := NewClient(Config{BaseURL: srv.URL, APIKey: "k", Model: "m"})
+		reply, err := c.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil)
+		srv.Close()
+		if err != nil {
+			t.Fatalf("body %s: %v", body, err)
+		}
+		if reply.FinishReason != want {
+			t.Errorf("finish_reason = %q, want %q", reply.FinishReason, want)
+		}
+	}
+}
+
+func TestFinishReasonTruncated(t *testing.T) {
+	if !FinishReasonLength.Truncated() {
+		t.Error("length should report truncated")
+	}
+	for _, f := range []FinishReason{FinishReasonStop, FinishReasonToolCalls, FinishReasonUnknown} {
+		if f.Truncated() {
+			t.Errorf("%q should not report truncated", f)
+		}
+	}
+}
+
+// max_tokens=0 时不应发送该字段，交给服务端决定。
+func TestMaxTokensZeroIsOmitted(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{BaseURL: srv.URL, APIKey: "k", Model: "m", MaxTokens: 0})
+	if _, err := c.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := gotBody["max_tokens"]; present {
+		t.Errorf("max_tokens should be omitted when 0, got %v", gotBody["max_tokens"])
+	}
+}

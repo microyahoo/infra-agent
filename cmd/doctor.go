@@ -111,7 +111,7 @@ func init() {
 	f.BoolVar(&doctorOpts.SelfCheck, "self-check", false, "在真实集群上逐个运行诊断工具（不调用模型），用于验证解析是否正确")
 	f.BoolVar(&doctorOpts.Interactive, "interactive", false, "诊断结束后进入交互模式，可以继续追问")
 	f.IntVar(&doctorOpts.LLMRetries, "llm-retries", -1, "模型请求失败时的重试次数（-1 表示用默认值 2）")
-	f.IntVar(&doctorOpts.MaxTokens, "max-tokens", 4096, "单次模型回复的最大 token 数")
+	f.IntVar(&doctorOpts.MaxTokens, "max-tokens", 8192, "单次模型回复的最大 token 数（0 表示交给服务端默认值）")
 	f.IntVar(&doctorOpts.LLMTimeout, "llm-timeout", 120, "单次模型请求超时（秒）")
 	f.IntVar(&doctorOpts.ProbeTimeout, "probe-timeout", 8, "能力探测与拓扑发现的单条命令超时（秒）")
 

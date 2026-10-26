@@ -38,7 +38,7 @@ export FEISHU_SECRET="your_secret_key"  # 如果启用了签名验证
 
 ### 方法 2: 配置文件
 
-编辑 `~/.infra-agent.yaml` 或 `config/default.yaml`:
+编辑 `~/.infra-agent.yaml`:
 
 ```yaml
 notifiers:

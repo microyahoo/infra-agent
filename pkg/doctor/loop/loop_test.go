@@ -372,3 +372,101 @@ func TestFollowUpKeepsHistoryAndEvidence(t *testing.T) {
 		t.Error("follow-up question missing")
 	}
 }
+
+// 回复被 max_tokens 截断时，必须告知模型"是长度问题"，
+// 而不是当成格式错误让它原样重试。
+func TestLoopHandlesTruncatedReply(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "probe", res: &tools.Result{Summary: "x"}})
+
+	model := &scriptedModel{replies: []llm.Reply{
+		// 第一次：被截断的半截内容
+		{Content: `{"severity":"high","headline":"osd.7 所在盘`, FinishReason: llm.FinishReasonLength},
+		// 第二次：正常给出结论
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: ConcludeToolName, Args: conclusionJSON("high", nil)}}},
+	}}
+
+	r := newTestLoop(t, model, reg)
+	res, err := r.Run(context.Background(), Task{Question: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Conclusion == nil {
+		t.Fatal("expected conclusion after truncation retry")
+	}
+	if res.TruncatedReplies != 1 {
+		t.Errorf("TruncatedReplies = %d, want 1", res.TruncatedReplies)
+	}
+	// 发给模型的第二轮消息里必须提到"截断"，而不是"格式错误"
+	second := model.seenMsgs[1]
+	var joined strings.Builder
+	for _, m := range second {
+		joined.WriteString(m.Content)
+	}
+	if !strings.Contains(joined.String(), "截断") {
+		t.Errorf("model should be told about truncation, got messages: %s", joined.String())
+	}
+}
+
+// 工具调用参数被截断时，不应报"参数解析失败"，而应提示缩小参数范围。
+func TestLoopHandlesTruncatedToolArgs(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "probe", res: &tools.Result{Summary: "x"}})
+
+	model := &scriptedModel{replies: []llm.Reply{
+		// 参数是残缺 JSON
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: `{"osd_ids":[1,2,3`}}, FinishReason: llm.FinishReasonLength},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: ConcludeToolName, Args: conclusionJSON("low", nil)}}},
+	}}
+
+	r := newTestLoop(t, model, reg)
+	res, err := r.Run(context.Background(), Task{Question: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Chain.Len() != 0 {
+		t.Errorf("truncated tool call must not produce evidence, got %d", res.Chain.Len())
+	}
+	second := model.seenMsgs[1]
+	var joined strings.Builder
+	for _, m := range second {
+		joined.WriteString(m.Content)
+	}
+	if !strings.Contains(joined.String(), "截断") {
+		t.Errorf("should mention truncation, got: %s", joined.String())
+	}
+}
+
+// 收尾阶段被截断也必须正确处理，而不是耗尽尝试次数后失败。
+func TestForceConclusionHandlesTruncation(t *testing.T) {
+	reg := tools.NewRegistry()
+
+	var replies []llm.Reply
+	for i := 0; i < 5; i++ {
+		replies = append(replies, llm.Reply{
+			ToolCalls: []llm.ToolCall{{ID: fmt.Sprintf("c%d", i), Name: "probe", Args: fmt.Sprintf(`{"i":%d}`, i)}},
+		})
+	}
+	// 收尾第一次被截断
+	replies = append(replies, llm.Reply{
+		Content:      `{"severity":"high","headline":"长结论`,
+		FinishReason: llm.FinishReasonLength,
+	})
+	// 收尾第二次给出完整结论
+	replies = append(replies, llm.Reply{
+		ToolCalls: []llm.ToolCall{{ID: "final", Name: ConcludeToolName, Args: conclusionJSON("medium", nil)}},
+	})
+
+	model := &scriptedModel{replies: replies}
+	r := newTestLoop(t, model, reg)
+	res, err := r.Run(context.Background(), Task{Question: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Conclusion == nil {
+		t.Fatal("expected conclusion after truncated wrap-up")
+	}
+	if res.TruncatedReplies == 0 {
+		t.Error("expected TruncatedReplies > 0")
+	}
+}

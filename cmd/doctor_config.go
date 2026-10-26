@@ -106,7 +106,7 @@ func resolveDoctorOptions(cmd *cobra.Command) resolvedDoctorOptions {
 		APIKey:      viper.GetString("doctor.llm.api_key"),
 		APIKeyEnv:   flagString("api-key-env", "doctor.llm.api_key_env", "OPENAI_API_KEY"),
 		Temperature: viper.GetFloat64("doctor.llm.temperature"),
-		MaxTokens:   flagInt("max-tokens", "doctor.llm.max_tokens", 4096),
+		MaxTokens:   flagInt("max-tokens", "doctor.llm.max_tokens", 8192),
 		LLMTimeout:  flagInt("llm-timeout", "doctor.llm.timeout", 120),
 		LLMRetries:  flagInt("llm-retries", "doctor.llm.max_retries", -1),
 

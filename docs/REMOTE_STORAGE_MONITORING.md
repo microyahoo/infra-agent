@@ -110,7 +110,7 @@ data:
 ### 方法 2: 配置文件
 
 ```yaml
-# config/default.yaml
+# ~/.infra-agent.yaml
 
 # 远程存储服务器配置
 remoteStorage:

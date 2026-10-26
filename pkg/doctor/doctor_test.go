@@ -369,3 +369,23 @@ func newSessionResult(t *testing.T) *loop.Result {
 	t.Helper()
 	return &loop.Result{Chain: loop.NewChain()}
 }
+
+// 发生截断时报告必须留下说明，否则用户看不出结论为何不完整。
+func TestReportNotesTruncation(t *testing.T) {
+	d := New(Config{
+		Cluster: newFakeCluster(),
+		Model: &fakeModel{reply: llm.Reply{
+			ToolCalls: []llm.ToolCall{{ID: "c1", Name: loop.ConcludeToolName, Args: conclusionArgs("low")}},
+		}},
+	})
+	rep, err := d.Run(context.Background(), Task{Question: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 正常路径不应有截断说明
+	for _, n := range rep.Notes {
+		if strings.Contains(n, "截断") {
+			t.Errorf("unexpected truncation note on healthy run: %q", n)
+		}
+	}
+}

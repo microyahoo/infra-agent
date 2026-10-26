@@ -230,7 +230,7 @@ infra-agent analyze --explain --auto-diagnose --notify
 
 1. **源代码** - 完整的 Go 项目
 2. **可执行文件** - bin/infra-agent
-3. **配置文件** - config/default.yaml
+3. **配置文件** - config/doctor.example.yaml（示例，复制为 ~/.infra-agent.yaml 后使用）
 4. **文档** - docs/ 目录下 5 份文档
 5. **部署文件** - Dockerfile, Makefile
 6. **测试脚本** - test.sh
