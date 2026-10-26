@@ -64,6 +64,7 @@ func TestProbeFallsBackToLogOnly(t *testing.T) {
 			"crictl ps --name rook-ceph-mon -q":                   {exit: 1},
 			"docker ps --filter name=rook-ceph-mon -q":            {exit: 127},
 			"ls -d /var/lib/rook/rook-ceph/logs":                  {stdout: "/var/lib/rook/rook-ceph/logs\n"},
+			"ls /var/lib/rook/rook-ceph/logs":                     {stdout: "ceph-osd.7.log\nceph-osd.7.log.1.gz\n"},
 		},
 	}
 	caps := probeCapabilities(context.Background(), tr)
@@ -110,5 +111,51 @@ func TestProbeHostTools(t *testing.T) {
 	}
 	if !caps.HostTools["lsblk"] {
 		t.Error("lsblk should be available")
+	}
+}
+
+// 目录存在但里面只有 cephadm.log 时，不该被当成可用的 ceph 日志来源。
+// 这正是 cephadm 部署下的真实形态。
+func TestProbeIgnoresDirWithoutCephLogs(t *testing.T) {
+	tr := &fakeTransport{
+		responses: map[string]fakeResp{
+			"ceph --version":      {exit: 127},
+			"ls -d /var/log/ceph": {stdout: "/var/log/ceph\n"},
+			"ls /var/log/ceph":    {stdout: "cephadm.log\ncephadm.log-20260306.gz\n"},
+			"ls -d /var/lib/rook/rook-ceph/log": {
+				stdout: "/var/lib/rook/rook-ceph/log\n",
+			},
+			"ls /var/lib/rook/rook-ceph/log": {
+				stdout: "ceph-osd.9.log\nceph-mon.a.log\n",
+			},
+		},
+	}
+	caps := probeCapabilities(context.Background(), tr)
+	if len(caps.LogDirs) != 1 {
+		t.Fatalf("LogDirs = %v, want only the rook log dir", caps.LogDirs)
+	}
+	if caps.LogDirs[0] != "/var/lib/rook/rook-ceph/log" {
+		t.Errorf("LogDirs[0] = %q", caps.LogDirs[0])
+	}
+}
+
+// Rook 各版本目录名不一致（log / logs），两者都要能识别。
+func TestProbeFindsRookSingularLogDir(t *testing.T) {
+	tr := &fakeTransport{
+		responses: map[string]fakeResp{
+			"ceph --version":                    {stdout: "ceph version 16.2.14 (x) pacific (stable)"},
+			"ls -d /var/lib/rook/rook-ceph/log": {stdout: "/var/lib/rook/rook-ceph/log\n"},
+			"ls /var/lib/rook/rook-ceph/log":    {stdout: "ceph-osd.9.log\n"},
+		},
+	}
+	caps := probeCapabilities(context.Background(), tr)
+	found := false
+	for _, d := range caps.LogDirs {
+		if d == "/var/lib/rook/rook-ceph/log" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("LogDirs = %v, want to include the singular rook log dir", caps.LogDirs)
 	}
 }

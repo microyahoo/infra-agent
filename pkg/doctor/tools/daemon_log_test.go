@@ -51,7 +51,8 @@ func TestDaemonLogFallsBackToKubectl(t *testing.T) {
 	tr := newFakeRunner()
 	tr.caps.LogDirs = nil
 	tr.caps.Kubectl = true
-	tr.on("node-3", []string{"kubectl", "-n", "rook-ceph", "logs", "rook-ceph-osd-7", "--tail", "100"}, "log line\n")
+	// Rook 的 pod 名带随机后缀，必须按标签选择器取日志。
+	tr.on("node-3", []string{"kubectl", "-n", "rook-ceph", "logs", "-l", "ceph-osd-id=7", "-c", "osd", "--tail", "100"}, "log line\n")
 
 	res, _, err := NewDaemonLog(tr).Execute(context.Background(), json.RawMessage(`{"daemon":"osd","id":"7","lines":100}`))
 	if err != nil {
@@ -69,5 +70,26 @@ func TestDaemonLogAllSourcesFail(t *testing.T) {
 	_, _, err := NewDaemonLog(tr).Execute(context.Background(), json.RawMessage(`{"daemon":"osd","id":"7"}`))
 	if err == nil {
 		t.Fatal("expected error when no source works")
+	}
+}
+
+// Rook 的 pod 名带随机后缀，按名字拼接必然 NotFound。
+// 必须使用标签选择器。
+func TestRookLogSelectorUsesLabels(t *testing.T) {
+	sel, desc := rookLogSelector("osd", "9")
+	if sel != "ceph-osd-id=9" {
+		t.Errorf("osd selector = %q, want ceph-osd-id=9", sel)
+	}
+	if desc == "" {
+		t.Error("describe should explain the selection")
+	}
+	sel, _ = rookLogSelector("mon", "a")
+	if sel != "app=rook-ceph-mon" {
+		t.Errorf("mon selector = %q", sel)
+	}
+	// osd 没给 id 时退回按 app 选择
+	sel, _ = rookLogSelector("osd", "")
+	if sel != "app=rook-ceph-osd" {
+		t.Errorf("osd without id selector = %q", sel)
 	}
 }

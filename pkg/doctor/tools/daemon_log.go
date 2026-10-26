@@ -118,15 +118,17 @@ func (t *daemonLogTool) Execute(ctx context.Context, args json.RawMessage) (*Res
 		})
 	}
 	if caps.Kubectl {
-		// 无 id 时（如 mgr）不拼 "-<id>"，直接用 rook-ceph-<daemon> 前缀。
-		pod := "rook-ceph-" + daemon
-		if id != "" {
-			pod += "-" + id
-		}
+		// Rook 的 pod 名带随机后缀（rook-ceph-osd-9-d55f6d445-9jqn2），
+		// 不能靠拼名字定位，必须用标签选择器：
+		//   osd → ceph-osd-id=<id>
+		//   mon/mgr 等 → app=rook-ceph-<daemon>
+		sel, describe := rookLogSelector(daemon, id)
 		attempts = append(attempts, logAttempt{
 			source: logSourceKubectlLogs,
-			detail: pod,
-			argv:   []string{"kubectl", "-n", "rook-ceph", "logs", pod, "--tail", fmt.Sprint(lines)},
+			detail: describe,
+			// Rook 的 osd pod 有 osd / log-collector 两个容器，必须指定容器名。
+			argv: []string{"kubectl", "-n", "rook-ceph", "logs", "-l", sel,
+				"-c", rookLogContainer(daemon), "--tail", fmt.Sprint(lines)},
 		})
 	}
 	if caps.ContainerRT == "crictl" {
@@ -222,6 +224,33 @@ func daemonLogResult(d *DaemonLogData) *Result {
 }
 
 // containsDir 判断日志目录列表里是否精确包含 dir。
+// rookLogContainer 返回 rook 各类 pod 中承载 ceph 日志的容器名。
+// osd pod 带一个 log-collector sidecar，不指定容器名 kubectl 会报错。
+func rookLogContainer(daemon string) string {
+	switch daemon {
+	case "osd":
+		return "osd"
+	case "mon":
+		return "mon"
+	case "mgr":
+		return "mgr"
+	case "mds":
+		return "mds"
+	case "rgw":
+		return "rgw"
+	}
+	return daemon
+}
+
+// rookLogSelector 给出按 daemon 类型定位 pod 的标签选择器。
+// Rook 的 pod 名带随机后缀，只能靠标签定位。
+func rookLogSelector(daemon, id string) (selector, describe string) {
+	if daemon == "osd" && id != "" {
+		return "ceph-osd-id=" + id, "osd." + id + "（标签 ceph-osd-id=" + id + "）"
+	}
+	return "app=rook-ceph-" + daemon, daemon + "（标签 app=rook-ceph-" + daemon + "）"
+}
+
 func containsDir(dirs []string, dir string) bool {
 	for _, d := range dirs {
 		if d == dir {

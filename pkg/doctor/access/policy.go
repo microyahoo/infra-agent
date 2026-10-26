@@ -40,7 +40,7 @@ func DefaultPolicy() *Policy {
 			"osd set": true, "osd unset": true, "config set": true, "config rm": true,
 			"injectargs": true, "pg scrub": true, "pg repair": true, "pg deep-scrub": true,
 		},
-		pathPrefix: []string{"/var/log/ceph", "/var/lib/rook/rook-ceph/logs", "/var/lib/rook/rook-ceph"},
+		pathPrefix: []string{"/var/log/ceph", "/var/lib/rook/rook-ceph/log", "/var/lib/rook/rook-ceph/logs", "/var/lib/rook/rook-ceph"},
 	}
 }
 
@@ -311,15 +311,24 @@ func (p *Policy) checkSmartctl(args []string) error {
 	return nil
 }
 
-// checkLs 只允许 ls -d <path>，且路径在白名单内。
+// checkLs 允许两种形态，参数都必须在白名单路径内：
+//
+//	ls -d <path>   判断目录是否存在
+//	ls <path>      列出目录内容（用于判断该目录是否真的存放 ceph 日志）
 func (p *Policy) checkLs(args []string) error {
-	if len(args) != 2 || args[0] != "-d" {
-		return fmt.Errorf("rejected: ls must be called as -d <path>")
+	switch {
+	case len(args) == 2 && args[0] == "-d":
+		if !p.pathAllowed(args[1]) {
+			return fmt.Errorf("rejected: path %q outside allowed prefixes", args[1])
+		}
+		return nil
+	case len(args) == 1:
+		if !p.pathAllowed(args[0]) {
+			return fmt.Errorf("rejected: path %q outside allowed prefixes", args[0])
+		}
+		return nil
 	}
-	if !p.pathAllowed(args[1]) {
-		return fmt.Errorf("rejected: path %q outside allowed prefixes", args[1])
-	}
-	return nil
+	return fmt.Errorf("rejected: ls must be called as '-d <path>' or '<path>'")
 }
 
 // checkCommand 只允许 command -v <固定的几个探测目标>。

@@ -35,10 +35,45 @@ func parseCephVersion(s string) string {
 	return m[1]
 }
 
-// defaultLogDirs 是探测日志目录时的固定候选列表。
-var defaultLogDirs = []string{
+// logDirCandidates 是探测日志目录时的固定候选列表，按优先级排列。
+//
+// 覆盖三种常见部署的默认位置：
+//   - /var/log/ceph                       cephadm / 包安装
+//   - /var/lib/rook/rook-ceph/log         Rook 早期版本（单数 log）
+//   - /var/lib/rook/rook-ceph/logs        Rook 部分版本（复数 logs）
+//
+// 候选之外还会做一次目录发现（见 discoverLogDirs），因为不同 Rook 版本的
+// 落盘位置并不统一，硬编码候选永远会漏。
+var logDirCandidates = []string{
 	"/var/log/ceph",
+	"/var/lib/rook/rook-ceph/log",
 	"/var/lib/rook/rook-ceph/logs",
+}
+
+// dirExists 判断远端目录是否存在。
+func dirExists(ctx context.Context, tr transport, dir string) bool {
+	out, _, code := tr.exec(ctx, []string{"ls", "-d", dir})
+	return code == 0 && strings.TrimSpace(out) != ""
+}
+
+// hasCephLogs 判断目录下是否真的有 ceph 组件的日志文件。
+// 只看目录存在不够：/var/log/ceph 在 cephadm 部署下只有 cephadm.log。
+func hasCephLogs(ctx context.Context, tr transport, dir string) bool {
+	// 用 shell 通配一次拿到候选文件；policy 允许该形态的 ls。
+	out, _, code := tr.exec(ctx, []string{"ls", dir})
+	if code != 0 {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "ceph-osd.") ||
+			strings.HasPrefix(line, "ceph-mon.") ||
+			strings.HasPrefix(line, "ceph-mgr.") ||
+			strings.HasPrefix(line, "ceph-mds.") ||
+			strings.HasPrefix(line, "ceph-client.") {
+			return true
+		}
+	}
+	return false
 }
 
 // probeCapabilities 按 host-ceph → toolbox → container-exec → log-only 顺序探测。
@@ -92,8 +127,15 @@ func probeCapabilitiesWithProgress(ctx context.Context, tr transport, progress f
 
 	report("检查日志目录")
 	// 4. 日志目录（总是探测，log-only 时是唯一数据源）
-	for _, dir := range defaultLogDirs {
-		if out, _, code := tr.exec(ctx, []string{"ls", "-d", dir}); code == 0 && strings.TrimSpace(out) != "" {
+	//
+	// 先试固定候选；再确认候选目录里确实有 ceph 日志文件——
+	// /var/log/ceph 在 cephadm 环境下可能只放 cephadm.log，
+	// 真正的 daemon 日志在别处，此时不应把它当作可用来源。
+	for _, dir := range logDirCandidates {
+		if !dirExists(ctx, tr, dir) {
+			continue
+		}
+		if hasCephLogs(ctx, tr, dir) {
 			caps.LogDirs = append(caps.LogDirs, dir)
 		}
 	}
