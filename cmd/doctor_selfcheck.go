@@ -45,11 +45,7 @@ func runSelfCheck(ctx context.Context, cluster *access.Cluster) error {
 
 	fmt.Fprintf(os.Stderr, "🧪 在真实集群上逐个验证工具 ...\n\n")
 
-	type check struct {
-		name string
-		args map[string]any
-	}
-	checks := []check{
+	checks := []selfCheck{
 		{"ceph_status", nil},
 		{"osd_tree", nil},
 		{"pool_info", nil},
@@ -61,17 +57,28 @@ func runSelfCheck(ctx context.Context, cluster *access.Cluster) error {
 	// 拓扑相关工具依赖真实 OSD
 	if osdID > 0 {
 		checks = append(checks,
-			check{"osd_detail", map[string]any{"osd_id": osdID}},
-			check{"perf_counters", map[string]any{"osd_id": osdID}},
+			selfCheck{"osd_detail", map[string]any{"osd_id": osdID}},
+			selfCheck{"perf_counters", map[string]any{"osd_id": osdID}},
 		)
 		if dev, host := placementOf(topo, osdID); dev != "" && host != "" {
 			checks = append(checks,
-				check{"host_io", map[string]any{"node": host, "device": dev}},
+				selfCheck{"host_io", map[string]any{"node": host, "device": dev}},
 			)
 		}
 	}
-	if logPath := firstLogPath(topo); logPath != "" {
-		checks = append(checks, check{"read_log", map[string]any{"node": node, "path": logPath}})
+	// 日志类工具：优先验证 daemon_log（它会自行选择宿主机/容器来源），
+	// 只有宿主机确实存在日志文件时才验证 read_log。
+	if osdID > 0 {
+		checks = append(checks, selfCheck{"daemon_log", map[string]any{
+			"daemon": "osd", "id": fmt.Sprint(osdID), "lines": 50,
+		}})
+	}
+	if caps := cluster.Capabilities(ctx, node); len(caps.LogDirs) > 0 && osdID > 0 {
+		checks = append(checks, selfCheck{"read_log", map[string]any{
+			"node": node, "path": fmt.Sprintf("%s/ceph-osd.%d.log", caps.LogDirs[0], osdID),
+		}})
+	} else {
+		fmt.Fprintf(os.Stderr, "  （跳过 read_log：该节点宿主机没有日志目录，日志在容器内）\n")
 	}
 
 	var results []selfCheckResult
@@ -127,11 +134,28 @@ func runSelfCheck(ctx context.Context, cluster *access.Cluster) error {
 		b.WriteString("全部工具都能正常读取集群数据，可以运行完整诊断。\n")
 	}
 
-	fmt.Fprintf(&b, "\n注意：以下工具需要模型给出参数，未在此验证：\n")
-	fmt.Fprintf(&b, "  daemon_log（需指定 daemon 与 id）、ceph_source_lookup（需配置 --ceph-src）\n")
+	if !hasCheck(checks, "ceph_source_lookup") {
+		fmt.Fprintf(&b, "\n未验证：ceph_source_lookup（需通过 --ceph-src 配置本地源码目录）\n")
+	}
 
 	fmt.Fprint(os.Stdout, b.String())
 	return nil
+}
+
+// selfCheck 是一条待验证的工具调用。
+type selfCheck struct {
+	name string
+	args map[string]any
+}
+
+// hasCheck 判断某个工具是否已纳入自检。
+func hasCheck(checks []selfCheck, name string) bool {
+	for _, c := range checks {
+		if c.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // selfCheckRunner 把 Cluster 适配成 tools.Runner。

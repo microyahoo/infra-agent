@@ -89,7 +89,19 @@ func (t *readLogTool) Execute(ctx context.Context, args json.RawMessage) (*Resul
 	out, err := t.r.Run(ctx, node, argv)
 	raw := newRaw(node, argv, out)
 	if err != nil {
-		return nil, nil, err
+		// 容器化部署（Rook/cephadm）下，daemon 日志往往只在容器 stdout 里，
+		// 宿主机上根本没有对应文件。这种失败要把模型引到 daemon_log，
+		// 而不是让它反复换路径重试。
+		caps := t.r.Capabilities(ctx, node)
+		if len(caps.LogDirs) == 0 {
+			return nil, raw, fmt.Errorf(
+				"读取 %s 失败（%v）：该节点宿主机上没有日志目录，日志很可能在容器内。"+
+					"请改用 daemon_log 读取组件日志",
+				in.Path, err)
+		}
+		return nil, raw, fmt.Errorf(
+			"读取 %s 失败（%v）：可改用 daemon_log 按组件读取；该节点可用目录：%s",
+			in.Path, err, strings.Join(caps.LogDirs, "、"))
 	}
 
 	// 过滤在 Go 侧完成：生病的集群不应再承担额外的远端 I/O。

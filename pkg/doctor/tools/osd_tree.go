@@ -65,10 +65,16 @@ type rawOSDDFNode struct {
 	KBUsed      float64 `json:"kb_used"`
 }
 
-// utilization 返回该 OSD 的使用率（百分比）。
-// 优先用现成的 utilization 字段，缺失时由 kb_used/kb 计算。
+// utilization 返回该 OSD 的使用率（百分比 0-100）。
+//
+// Ceph 的 ceph osd df -f json 给的 utilization 是 0-1 的小数（如 0.0052
+// 表示 0.52%），不是百分比。这里统一换算成 0-100，否则热点阈值
+// （>85%）永远不可能命中，且摘要会显示成 0.0%。
 func (n rawOSDDFNode) utilization() float64 {
 	if n.Utilization > 0 {
+		if n.Utilization <= 1 {
+			return n.Utilization * 100
+		}
 		return n.Utilization
 	}
 	if n.KB > 0 {

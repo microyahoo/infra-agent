@@ -116,3 +116,27 @@ func TestOSDTreeComputesUtilizationFromKB(t *testing.T) {
 		t.Errorf("expected osd.7 hotspot, got %+v", d.Hotspots)
 	}
 }
+
+// Ceph 的 utilization 字段是 0-1 小数。若不换算，热点阈值永远不触发，
+// 摘要也会显示成 0.0%——这是不会报错的静默错误。
+func TestOSDTreeScalesFractionalUtilization(t *testing.T) {
+	tr := newFakeRunner()
+	tr.on("node-3", []string{"ceph", "osd", "df", "-f", "json"}, `{"nodes":[
+      {"id":9,"name":"osd.9","type":"osd","status":"up","kb":19531825152,"kb_used":18000000000,"utilization":0.92},
+      {"id":19,"name":"osd.19","type":"osd","status":"up","kb":19531825152,"kb_used":1030184,"utilization":0.0052}]}`)
+
+	res, _, err := NewOSDTree(tr).Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := res.Data.(*OSDTreeData)
+	if d.OSDs[0].Utilization != 92 {
+		t.Errorf("osd.9 utilization = %v, want 92", d.OSDs[0].Utilization)
+	}
+	if d.OSDs[1].Utilization < 0.5 || d.OSDs[1].Utilization > 0.6 {
+		t.Errorf("osd.19 utilization = %v, want ~0.52", d.OSDs[1].Utilization)
+	}
+	if len(d.Hotspots) != 1 || d.Hotspots[0].ID != 9 {
+		t.Errorf("expected osd.9 hotspot, got %+v", d.Hotspots)
+	}
+}

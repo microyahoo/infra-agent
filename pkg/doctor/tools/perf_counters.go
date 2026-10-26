@@ -32,13 +32,61 @@ func (t *perfCountersTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"osd_id":{"type":"integer","description":"OSD 编号，例如 7"}},"required":["osd_id"],"additionalProperties":false}`)
 }
 
-// rawPerfDump 是 perf dump 的形态：section → 计数器名 → 统计值。
-// 普通计数器只有 value，带延迟统计的计数器才有 avgcount/sum/avg。
-type rawPerfDump map[string]map[string]struct {
-	Value    *float64 `json:"value"`
-	AvgCount float64  `json:"avgcount"`
-	Sum      float64  `json:"sum"`
-	Avg      float64  `json:"avg"`
+// rawPerfDump 是 perf dump 的形态：section → 计数器名 → 值。
+//
+// 值有两种形态，同一个 section 里会混用：
+//   - 裸数字：   "msgr_recv_messages": 4251472
+//   - 延迟统计： "msgr_handle_ack_lat": {"avgcount":..,"sum":..,"avgtime":..}
+//
+// 因此这里必须是 json.RawMessage，逐项判断后再取值。
+type rawPerfDump map[string]map[string]json.RawMessage
+
+// perfCounter 是从两种形态归一化出来的计数器值。
+type perfCounter struct {
+	Value    float64 // 裸数字计数器的值
+	AvgCount float64
+	Sum      float64
+	Avg      float64 // 延迟统计的均值（Ceph 里字段名为 avgtime）
+}
+
+// parsePerfCounter 解析单个计数器的值。
+func parsePerfCounter(raw json.RawMessage) (perfCounter, bool) {
+	// 先试裸数字
+	var num float64
+	if err := json.Unmarshal(raw, &num); err == nil {
+		return perfCounter{Value: num}, true
+	}
+	// 再试延迟统计对象；注意 Ceph 用的是 avgtime 而非 avg
+	var obj struct {
+		AvgCount *float64 `json:"avgcount"`
+		Sum      *float64 `json:"sum"`
+		AvgTime  *float64 `json:"avgtime"`
+		Avg      *float64 `json:"avg"`
+		Value    *float64 `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return perfCounter{}, false
+	}
+	c := perfCounter{}
+	if obj.Value != nil {
+		c.Value = *obj.Value
+	}
+	if obj.AvgCount != nil {
+		c.AvgCount = *obj.AvgCount
+	}
+	if obj.Sum != nil {
+		c.Sum = *obj.Sum
+	}
+	switch {
+	case obj.AvgTime != nil:
+		c.Avg = *obj.AvgTime
+	case obj.Avg != nil:
+		c.Avg = *obj.Avg
+	case obj.AvgCount != nil && *obj.AvgCount > 0 && obj.Sum != nil:
+		// 没给均值时自行计算
+		c.Avg = *obj.Sum / *obj.AvgCount
+	}
+	return c, true
 }
 
 func (t *perfCountersTool) Execute(ctx context.Context, args json.RawMessage) (*Result, *Raw, error) {
@@ -72,12 +120,16 @@ func (t *perfCountersTool) Execute(ctx context.Context, args json.RawMessage) (*
 	// 同一计数器名可能出现在多个 section，后写的覆盖先读的（如 osd 段最权威）。
 	d := &PerfCountersData{OSD: id, Avg: map[string]float64{}}
 	for _, section := range dump {
-		for name, c := range section {
-			if c.Value != nil {
-				d.Avg[name] = *c.Value
+		for name, rawVal := range section {
+			c, ok := parsePerfCounter(rawVal)
+			if !ok {
 				continue
 			}
-			d.Avg[name] = c.Avg
+			if c.AvgCount > 0 || c.Avg != 0 {
+				d.Avg[name] = c.Avg
+				continue
+			}
+			d.Avg[name] = c.Value
 		}
 	}
 

@@ -120,7 +120,7 @@ func (t *poolInfoTool) Execute(ctx context.Context, _ json.RawMessage) (*Result,
 	var hot []string
 	for _, p := range d.Pools {
 		if p.UsedPercent >= 0.8 {
-			hot = append(hot, fmt.Sprintf("%s(%.0f%%)", p.Name, p.UsedPercent*100))
+			hot = append(hot, fmt.Sprintf("%s(%s)", p.Name, formatPercent(p.UsedPercent*100)))
 		}
 		if p.PGNumTarget > 0 && p.PGNumTarget >= p.PGNum*2 {
 			res.Hints = append(res.Hints, fmt.Sprintf("池 %s 的 PG 数 %d 远低于目标 %d，可以建议调整 pg_num（需人工确认）", p.Name, p.PGNum, p.PGNumTarget))

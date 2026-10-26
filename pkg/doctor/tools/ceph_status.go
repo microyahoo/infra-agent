@@ -118,8 +118,8 @@ func (t *cephStatusTool) Execute(ctx context.Context, _ json.RawMessage) (*Resul
 	raw := newRaw(node, argv, out)
 
 	res := &Result{
-		Summary: fmt.Sprintf("%s，mon %d，OSD %d 总/%d up/%d in，PG %d（异常 %d），容量 %.1f%%",
-			d.Health, d.NumMons, d.NumOSDs, d.NumOSDsUp, d.NumOSDsIn, d.NumPGs, d.DegradedPGs, d.UsedPercent),
+		Summary: fmt.Sprintf("%s，mon %d，OSD %d 总/%d up/%d in，PG %d（异常 %d），容量 %s",
+			d.Health, d.NumMons, d.NumOSDs, d.NumOSDsUp, d.NumOSDsIn, d.NumPGs, d.DegradedPGs, formatPercent(d.UsedPercent)),
 		Data: d,
 	}
 	if d.Health != "HEALTH_OK" {
@@ -135,6 +135,21 @@ func (t *cephStatusTool) Execute(ctx context.Context, _ json.RawMessage) (*Resul
 		res.Hints = append(res.Hints, "异常 PG 数量较多，优先调用 pg_detail 而非逐个查询")
 	}
 	return res, raw, nil
+}
+
+// formatPercent 按数值大小选择有效位数。
+// 大容量集群早期使用率极低（例如 2PB 用 148GB ≈ 0.007%），
+// 固定 %.1f 会显示成 0.0%，让读者误以为数据缺失。
+func formatPercent(p float64) string {
+	switch {
+	case p == 0:
+		return "0%"
+	case p < 0.01:
+		return fmt.Sprintf("%.4f%%", p)
+	case p < 1:
+		return fmt.Sprintf("%.2f%%", p)
+	}
+	return fmt.Sprintf("%.1f%%", p)
 }
 
 // primaryNode 返回诊断入口节点。

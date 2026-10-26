@@ -105,3 +105,18 @@ func TestCephStatusUnavailableWithoutCLI(t *testing.T) {
 		t.Errorf("error should point to log path, got %v", err)
 	}
 }
+
+// 大容量低使用率集群（2PB 用 148GB ≈ 0.007%）不应显示成 0.0%。
+func TestFormatPercentAvoidsMisleadingZero(t *testing.T) {
+	cases := map[float64]string{
+		0:      "0%",
+		0.0066: "0.0066%",
+		0.52:   "0.52%",
+		62.5:   "62.5%",
+	}
+	for in, want := range cases {
+		if got := formatPercent(in); got != want {
+			t.Errorf("formatPercent(%v) = %q, want %q", in, got, want)
+		}
+	}
+}
