@@ -40,6 +40,7 @@ type doctorOptions struct {
 	SSHTimeout   int
 	LLMRetries   int
 	DryRun       bool
+	SelfCheck    bool
 }
 
 var doctorOpts doctorOptions
@@ -102,6 +103,7 @@ func init() {
 	f.StringVar(&doctorOpts.APIKeyEnv, "api-key-env", "OPENAI_API_KEY", "提供 API Key 的环境变量名")
 	f.IntVar(&doctorOpts.SSHTimeout, "ssh-timeout", 30, "单条命令超时（秒）")
 	f.BoolVar(&doctorOpts.DryRun, "dry-run", false, "仅连接并探测能力与拓扑，不调用模型")
+	f.BoolVar(&doctorOpts.SelfCheck, "self-check", false, "在真实集群上逐个运行诊断工具（不调用模型），用于验证解析是否正确")
 	f.IntVar(&doctorOpts.LLMRetries, "llm-retries", -1, "模型请求失败时的重试次数（-1 表示用默认值 2）")
 
 	_ = doctorCmd.MarkFlagRequired("host")
@@ -115,7 +117,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	// 2. 非 --dry-run 时读取 API Key；放在建连之前，参数错误无需等待网络。
 	apiKey := ""
-	if !doctorOpts.DryRun {
+	if !doctorOpts.DryRun && !doctorOpts.SelfCheck {
 		apiKey = os.Getenv(doctorOpts.APIKeyEnv)
 		if apiKey == "" {
 			return fmt.Errorf("未找到 API Key：请设置环境变量 %s", doctorOpts.APIKeyEnv)
@@ -133,7 +135,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 
 	// 格式在联网前校验，参数写错时立即报错；dry-run 不使用报告格式。
-	if !doctorOpts.DryRun {
+	if !doctorOpts.DryRun && !doctorOpts.SelfCheck {
 		if _, err := doctor.Render(&report.Report{}, doctor.Format(doctorOpts.Format)); err != nil {
 			return err
 		}
@@ -165,6 +167,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	if doctorOpts.DryRun {
 		return runDoctorDryRun(ctx, cluster)
+	}
+	if doctorOpts.SelfCheck {
+		return runSelfCheck(ctx, cluster)
 	}
 
 	// 6. 组装并运行诊断。
