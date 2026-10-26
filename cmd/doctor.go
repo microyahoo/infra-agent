@@ -13,7 +13,6 @@ import (
 	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
 	"github.com/microyahoo/infra-agent/pkg/doctor/report"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 // doctorExitFindings 是在诊断发现严重问题时使用的退出码。
@@ -34,10 +33,14 @@ type doctorOptions struct {
 	Timeout      int
 	MaxRounds    int
 	MaxToolCalls int
+	MaxPerTool   int
 	Model        string
 	BaseURL      string
 	APIKeyEnv    string
 	SSHTimeout   int
+	ProbeTimeout int
+	MaxTokens    int
+	LLMTimeout   int
 	LLMRetries   int
 	DryRun       bool
 	SelfCheck    bool
@@ -99,6 +102,7 @@ func init() {
 	f.IntVar(&doctorOpts.Timeout, "timeout", 600, "总超时（秒）")
 	f.IntVar(&doctorOpts.MaxRounds, "max-rounds", 20, "最大调查轮数")
 	f.IntVar(&doctorOpts.MaxToolCalls, "max-tool-calls", 60, "最大工具调用数")
+	f.IntVar(&doctorOpts.MaxPerTool, "max-per-tool", 5, "单个工具的最大调用次数")
 	f.StringVar(&doctorOpts.Model, "model", "", "模型名，默认读配置")
 	f.StringVar(&doctorOpts.BaseURL, "base-url", "", "OpenAI 兼容地址，默认读配置")
 	f.StringVar(&doctorOpts.APIKeyEnv, "api-key-env", "OPENAI_API_KEY", "提供 API Key 的环境变量名")
@@ -107,56 +111,59 @@ func init() {
 	f.BoolVar(&doctorOpts.SelfCheck, "self-check", false, "在真实集群上逐个运行诊断工具（不调用模型），用于验证解析是否正确")
 	f.BoolVar(&doctorOpts.Interactive, "interactive", false, "诊断结束后进入交互模式，可以继续追问")
 	f.IntVar(&doctorOpts.LLMRetries, "llm-retries", -1, "模型请求失败时的重试次数（-1 表示用默认值 2）")
+	f.IntVar(&doctorOpts.MaxTokens, "max-tokens", 4096, "单次模型回复的最大 token 数")
+	f.IntVar(&doctorOpts.LLMTimeout, "llm-timeout", 120, "单次模型请求超时（秒）")
+	f.IntVar(&doctorOpts.ProbeTimeout, "probe-timeout", 8, "能力探测与拓扑发现的单条命令超时（秒）")
 
 	_ = doctorCmd.MarkFlagRequired("host")
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
+	// 0. 合并配置：命令行 > 配置文件 > 内置默认值。
+	opt := resolveDoctorOptions(cmd)
+
 	// 1. 认证方式检查放在最前，避免连上之后再报错。
-	if doctorOpts.Key == "" && doctorOpts.Password == "" {
-		return fmt.Errorf("必须提供 SSH 认证方式：--key（私钥路径）和 --password（密码）均未设置")
+	if opt.PrivateKey == "" && opt.Password == "" {
+		return fmt.Errorf("必须提供 SSH 认证方式：--key（私钥路径）和 --password（密码）均未设置，" +
+			"可在配置文件的 doctor.ssh 段中设置")
 	}
 
 	// 2. 非 --dry-run 时读取 API Key；放在建连之前，参数错误无需等待网络。
 	apiKey := ""
-	if !doctorOpts.DryRun && !doctorOpts.SelfCheck {
-		apiKey = os.Getenv(doctorOpts.APIKeyEnv)
+	if !opt.DryRun && !opt.SelfCheck {
+		apiKey = opt.APIKey
 		if apiKey == "" {
-			return fmt.Errorf("未找到 API Key：请设置环境变量 %s", doctorOpts.APIKeyEnv)
+			apiKey = os.Getenv(opt.APIKeyEnv)
+		}
+		if apiKey == "" {
+			return fmt.Errorf("未找到 API Key：请设置环境变量 %s，或在配置文件 doctor.llm.api_key 中填写", opt.APIKeyEnv)
 		}
 	}
-
-	// 3. 模型与地址优先取命令行，其次读配置。
-	model := doctorOpts.Model
-	if model == "" {
-		model = viper.GetString("doctor.llm.model")
-	}
-	baseURL := doctorOpts.BaseURL
-	if baseURL == "" {
-		baseURL = viper.GetString("doctor.llm.base_url")
-	}
+	model := opt.Model
+	baseURL := opt.BaseURL
 
 	// 格式在联网前校验，参数写错时立即报错；dry-run 不使用报告格式。
-	if !doctorOpts.DryRun && !doctorOpts.SelfCheck {
-		if _, err := doctor.Render(&report.Report{}, doctor.Format(doctorOpts.Format)); err != nil {
+	if !opt.DryRun && !opt.SelfCheck {
+		if _, err := doctor.Render(&report.Report{}, doctor.Format(opt.Format)); err != nil {
 			return err
 		}
 	}
 
 	// 4. 超时以命令上下文为父，保证 Ctrl-C 能立即中断。
-	ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(doctorOpts.Timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(opt.Timeout)*time.Second)
 	defer cancel()
 
 	// 5. 连接接入层。
-	fmt.Fprintf(os.Stderr, "🔌 连接 %s ...\n", doctorOpts.Host)
+	fmt.Fprintf(os.Stderr, "🔌 连接 %s ...\n", opt.Host)
 	cluster, err := access.Dial(ctx, access.Config{
-		Host:           doctorOpts.Host,
-		Port:           doctorOpts.Port,
-		User:           doctorOpts.User,
-		Password:       doctorOpts.Password,
-		PrivateKeyPath: doctorOpts.Key,
-		KnownHostsPath: doctorOpts.KnownHosts,
-		CommandTimeout: time.Duration(doctorOpts.SSHTimeout) * time.Second,
+		Host:           opt.Host,
+		Port:           opt.Port,
+		User:           opt.User,
+		Password:       opt.Password,
+		PrivateKeyPath: opt.PrivateKey,
+		KnownHostsPath: opt.KnownHosts,
+		CommandTimeout: time.Duration(opt.CommandTimeout) * time.Second,
+		ProbeTimeout:   time.Duration(opt.ProbeTimeout) * time.Second,
 		OnProgress: func(msg string) {
 			fmt.Fprintf(os.Stderr, "  · %s\n", msg)
 		},
@@ -167,10 +174,10 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	defer cluster.Close()
 	fmt.Fprintf(os.Stderr, "✓ SSH 连接已建立\n")
 
-	if doctorOpts.DryRun {
+	if opt.DryRun {
 		return runDoctorDryRun(ctx, cluster)
 	}
-	if doctorOpts.SelfCheck {
+	if opt.SelfCheck {
 		return runSelfCheck(ctx, cluster)
 	}
 
@@ -180,35 +187,41 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		modelName = "默认模型"
 	}
 	fmt.Fprintf(os.Stderr, "🤖 开始诊断（模型 %s，最多 %d 轮 / %d 次工具调用）\n",
-		modelName, doctorOpts.MaxRounds, doctorOpts.MaxToolCalls)
+		modelName, opt.MaxRounds, opt.MaxToolCalls)
 
 	d := doctor.New(doctor.Config{
 		Cluster: cluster,
 		// MaxRetries 用负数表示「采用默认值」。零值意味着不重试，
 		// 一次 5xx 或限流就会让整次诊断白跑。--llm-retries 可覆盖。
 		Model: llm.NewClient(llm.Config{
-			BaseURL: baseURL, APIKey: apiKey, Model: model,
-			MaxRetries: doctorOpts.LLMRetries,
+			BaseURL:     baseURL,
+			APIKey:      apiKey,
+			Model:       model,
+			Temperature: opt.Temperature,
+			MaxTokens:   opt.MaxTokens,
+			Timeout:     time.Duration(opt.LLMTimeout) * time.Second,
+			MaxRetries:  opt.LLMRetries,
 		}),
-		SourceDir:    doctorOpts.CephSrc,
-		MaxRounds:    doctorOpts.MaxRounds,
-		MaxToolCalls: doctorOpts.MaxToolCalls,
+		SourceDir:    opt.CephSrc,
+		MaxRounds:    opt.MaxRounds,
+		MaxToolCalls: opt.MaxToolCalls,
+		MaxPerTool:   opt.MaxPerTool,
 		OnProgress: func(msg string) {
 			fmt.Fprintf(os.Stderr, "  · %s\n", msg)
 		},
 	})
 
-	if doctorOpts.Interactive {
-		return runInteractiveSession(ctx, d)
+	if opt.Interactive {
+		return runInteractiveSession(ctx, d, opt)
 	}
 
-	rep, err := d.Run(ctx, doctor.Task{Question: doctorOpts.Question})
+	rep, err := d.Run(ctx, doctor.Task{Question: opt.Question})
 	if err != nil {
 		return err
 	}
 
 	// 7. 报告写 stdout，进度与提示写 stderr。
-	formatted, err := doctor.Render(rep, doctor.Format(doctorOpts.Format))
+	formatted, err := doctor.Render(rep, doctor.Format(opt.Format))
 	if err != nil {
 		return err
 	}

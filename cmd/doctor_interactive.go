@@ -31,13 +31,13 @@ const interactiveHelp = `
 `
 
 // runInteractiveSession 建立会话、跑首轮，然后进入问答循环。
-func runInteractiveSession(ctx context.Context, d *doctor.Doctor) error {
+func runInteractiveSession(ctx context.Context, d *doctor.Doctor, opt resolvedDoctorOptions) error {
 	sess, err := d.OpenSession(ctx)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "🔎 首轮调查 ...")
-	first, err := sess.Ask(ctx, doctorOpts.Question)
+	first, err := sess.Ask(ctx, opt.Question)
 	if err != nil {
 		return err
 	}

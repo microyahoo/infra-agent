@@ -67,6 +67,7 @@ func (s *Session) newRunner(question string) *loop.SessionRunner {
 		SystemPrompt: SystemPrompt(s.snap.toSnapshot(), questionOf(question)),
 		MaxRounds:    s.d.cfg.MaxRounds,
 		MaxToolCalls: s.d.cfg.MaxToolCalls,
+		MaxPerTool:   s.d.cfg.MaxPerTool,
 		OnProgress:   s.d.cfg.OnProgress,
 	})
 }

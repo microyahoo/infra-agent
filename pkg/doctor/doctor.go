@@ -53,6 +53,7 @@ type Config struct {
 	SourceDir    string // Ceph 源码目录，供源码查找工具使用，可为空
 	MaxRounds    int    // 调查最大轮数，0 表示使用 loop 默认值
 	MaxToolCalls int    // 工具调用总预算，0 表示使用 loop 默认值
+	MaxPerTool   int    // 单个工具的最大调用次数，0 表示使用 loop 默认值
 	OnProgress   func(msg string)
 }
 
@@ -142,6 +143,7 @@ func (d *Doctor) Run(ctx context.Context, task Task) (*Report, error) {
 		SystemPrompt: SystemPrompt(snap.toSnapshot(), question),
 		MaxRounds:    d.cfg.MaxRounds,
 		MaxToolCalls: d.cfg.MaxToolCalls,
+		MaxPerTool:   d.cfg.MaxPerTool,
 		OnProgress:   d.cfg.OnProgress,
 	})
 	res, err := lr.Run(ctx, loop.Task{ClusterID: snap.ClusterID, Question: question})

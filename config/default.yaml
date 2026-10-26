@@ -1,4 +1,6 @@
 # Infra Agent 默认配置文件
+#
+# doctor 命令的完整配置示例见 config/doctor.example.yaml
 
 # Kubernetes 配置
 kubernetes:
@@ -42,6 +44,38 @@ analyzers:
     memoryThreshold: 85
     # 磁盘使用率阈值（百分比）
     diskThreshold: 80
+
+# Ceph 诊断（doctor 命令）配置
+# 完整说明见 config/doctor.example.yaml，这里只列常用项。
+doctor:
+  ssh:
+    port: 22
+    user: root
+    private_key: ~/.ssh/id_rsa
+    known_hosts: ~/.ssh/known_hosts
+    command_timeout: 30
+    probe_timeout: 8
+  llm:
+    model: gpt-4o
+    base_url: ""
+    api_key: ""
+    api_key_env: OPENAI_API_KEY
+    temperature: 0.2
+    max_tokens: 4096
+    timeout: 120
+    max_retries: -1
+  loop:
+    max_rounds: 20
+    max_tool_calls: 60
+    max_per_tool: 5
+  ceph:
+    source_dir: ""
+  report:
+    format: text
+  timeout: 600
+  dry_run: false
+  self_check: false
+  interactive: false
 
 # AI 配置
 ai:
