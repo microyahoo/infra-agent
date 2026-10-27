@@ -112,52 +112,6 @@ func Dial(ctx context.Context, cfg Config) (*Cluster, error) {
 	}
 }
 
-// dialNode 经首节点建立到目标节点的连接，复用首节点的免密配置。
-// 首节点自身直接复用 entry。
-func (cc *clusterConn) dialNode(ctx context.Context, host string) (*ssh.Client, error) {
-	if host == cc.cfg.Host {
-		return cc.entry, nil
-	}
-
-	clientCfg := &ssh.ClientConfig{
-		User:            cc.cfg.User,
-		Auth:            cc.cfg.authMethods,
-		HostKeyCallback: cc.cfg.hostKeyCB,
-		Timeout:         cc.cfg.DialTimeout,
-	}
-
-	type result struct {
-		conn *ssh.Client
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		raw, derr := cc.entry.Dial("tcp", chainAddr(host, cc.cfg.Port))
-		if derr != nil {
-			ch <- result{nil, derr}
-			return
-		}
-		// v0.16.0 起 NewClientConn 直接返回握手后的 Conn 与通道，交给 NewClient 组装。
-		conn, chans, reqs, cerr := ssh.NewClientConn(raw, chainAddr(host, cc.cfg.Port), clientCfg)
-		if cerr != nil {
-			raw.Close()
-			ch <- result{nil, cerr}
-			return
-		}
-		ch <- result{ssh.NewClient(conn, chans, reqs), nil}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, fmt.Errorf("chain to %s: %w", host, ctx.Err())
-	case r := <-ch:
-		if r.err != nil {
-			return nil, fmt.Errorf("chain to %s: %w", host, r.err)
-		}
-		return r.conn, nil
-	}
-}
-
 func (cc *clusterConn) Close() error {
 	return cc.entry.Close()
 }

@@ -116,7 +116,62 @@ func (c *Cluster) realExecute(ctx context.Context, node string, argv []string) (
 
 // execSSH 在已解析的节点上跑一条命令串。
 func (c *Cluster) execSSH(ctx context.Context, node, cmd string) (Output, error) {
-	client, err := c.clientFor(ctx, node)
+	// 非入口节点：在入口节点上执行 `ssh <node> <cmd>`。
+	//
+	// 为什么不是从这里直接链式连接：本地的私钥通常没有授权到其他节点，
+	// 有免密关系的是"入口节点 → 其余节点"。用本地凭据去连别的节点会得到
+	// "unable to authenticate"，整个宿主机层诊断都会失效。
+	// 在入口节点上跑 ssh，正好复用它自己的免密配置与 known_hosts。
+	final, err := remoteCommand(c.conn, node, cmd)
+	if err != nil {
+		return Output{}, err
+	}
+	return c.runOnEntry(ctx, node, final)
+}
+
+// remoteCommand 决定一条命令最终怎么执行。
+//
+// 入口节点直接执行；其余节点在入口节点上包一层 ssh，
+// 复用入口节点自己的免密配置与 known_hosts。
+// 之所以不从这里链式直连：本地私钥通常只授权了入口节点，
+// 直连其他节点会 "unable to authenticate"，宿主机层诊断会整体失效。
+func remoteCommand(cc *clusterConn, node, cmd string) (string, error) {
+	if node == "" || node == cc.cfg.Host {
+		return cmd, nil
+	}
+	if !validHostname(node) {
+		return "", unavailable("节点名 %q 含非法字符，拒绝执行", node)
+	}
+	user := cc.cfg.User
+	if user == "" {
+		user = "root"
+	}
+	remote := []string{"ssh", "-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "ConnectTimeout=8",
+		"-l", user, node, cmd}
+	return BuildCommand(remote), nil
+}
+
+// validHostname 只接受字母数字、点、横线、下划线。
+func validHostname(h string) bool {
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	for _, r := range h {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// runOnEntry 在入口节点的 SSH 会话里执行一条命令串。
+func (c *Cluster) runOnEntry(ctx context.Context, node, cmd string) (Output, error) {
+	client, err := c.clientFor(ctx, c.conn.cfg.Host)
 	if err != nil {
 		return Output{}, classifyError(err, "", 0)
 	}
@@ -263,27 +318,11 @@ func parseFirstLine(s string) string {
 }
 
 func (c *Cluster) clientFor(ctx context.Context, node string) (*ssh.Client, error) {
-	c.mu.RLock()
-	cl, ok := c.clients[node]
-	c.mu.RUnlock()
-	if ok {
-		return cl, nil
+	// 只会请求入口节点：其余节点通过入口节点上的 ssh 命令访问。
+	if c.conn.entry == nil {
+		return nil, fmt.Errorf("入口节点连接已关闭")
 	}
-	cl, err := c.conn.dialNode(ctx, node)
-	if err != nil {
-		return nil, err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// 双检：并发建连时保留先注册的那条，关闭多余的
-	if existing, exists := c.clients[node]; exists && existing != c.conn.entry {
-		if cl != c.conn.entry {
-			cl.Close()
-		}
-		return existing, nil
-	}
-	c.clients[node] = cl
-	return cl, nil
+	return c.conn.entry, nil
 }
 
 // Capabilities 返回节点的能力，结果按节点缓存。

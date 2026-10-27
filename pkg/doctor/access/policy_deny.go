@@ -51,6 +51,9 @@ func DefaultDenyPolicy() *Policy {
 			// 时间与版本
 			"date": true, "timedatectl": true, "chronyc": true, "ntpq": true,
 			"command": true, "which": true,
+			// 仅由 Cluster 在入口节点上使用，参数由程序构造（节点名经白名单校验），
+			// 不接受模型直接传入。
+			"ssh": true,
 		},
 		mutatingPatterns: []string{
 			// ceph 侧变更

@@ -419,3 +419,39 @@ func TestClusterConcurrentRunIsSafe(t *testing.T) {
 		}
 	}
 }
+
+// 非入口节点必须在入口节点上执行 ssh，而不是用本地凭据直连。
+// 本地私钥通常只授权了入口节点；直连其他节点会 "unable to authenticate"，
+// 使 host_check / host_io / read_log 全部失效。
+func TestRemoteCommandRouting(t *testing.T) {
+	cc := &clusterConn{cfg: Config{Host: "entry", User: "root", Policy: DefaultPolicy()}}
+
+	// 入口节点：命令原样执行
+	if cmd, err := remoteCommand(cc, "entry", "uptime"); err != nil || cmd != "uptime" {
+		t.Errorf("entry routing = %q, %v", cmd, err)
+	}
+
+	// 其它节点：包一层 ssh
+	cmd, err := remoteCommand(cc, "node-9", "uptime")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ssh", "node-9", "uptime", "BatchMode=yes"} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("routing missing %q: %s", want, cmd)
+		}
+	}
+	if strings.HasPrefix(cmd, "ssh") && !strings.Contains(cmd, "-l") {
+		t.Error("ssh should specify the login user")
+	}
+}
+
+// 节点名含异常字符时拒绝拼进远端命令。
+func TestRemoteCommandRejectsBadHostname(t *testing.T) {
+	cc := &clusterConn{cfg: Config{Host: "entry", User: "root", Policy: DefaultPolicy()}}
+	for _, bad := range []string{"bad node", "x; rm -rf /", "a$(id)", "node/../x"} {
+		if _, err := remoteCommand(cc, bad, "uptime"); err == nil {
+			t.Errorf("expected rejection for %q", bad)
+		}
+	}
+}
