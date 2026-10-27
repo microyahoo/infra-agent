@@ -40,7 +40,6 @@ type resolvedDoctorOptions struct {
 	MaxCallsPerRound int
 
 	Timeout     int
-	Format      string
 	Question    string
 	CephSrc     string
 	DryRun      bool
@@ -117,7 +116,6 @@ func resolveDoctorOptions(cmd *cobra.Command) resolvedDoctorOptions {
 		MaxCallsPerRound: flagInt("max-calls-per-round", "doctor.loop.max_calls_per_round", 2),
 
 		Timeout:     flagInt("timeout", "doctor.timeout", 600),
-		Format:      flagString("format", "doctor.report.format", "text"),
 		Question:    doctorOpts.Question,
 		CephSrc:     expandHome(flagString("ceph-src", "doctor.ceph.source_dir", "")),
 		DryRun:      flagBool("dry-run", "doctor.dry_run"),

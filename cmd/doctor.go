@@ -11,13 +11,9 @@ import (
 	"github.com/microyahoo/infra-agent/pkg/doctor"
 	"github.com/microyahoo/infra-agent/pkg/doctor/access"
 	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
-	"github.com/microyahoo/infra-agent/pkg/doctor/report"
+	"github.com/microyahoo/infra-agent/pkg/doctor/tools"
 	"github.com/spf13/cobra"
 )
-
-// doctorExitFindings 是在诊断发现严重问题时使用的退出码。
-// 报告会先打印到 stdout，再直接以此退出码结束进程，避免错误被重复输出。
-const doctorExitFindings = 2
 
 // doctorOptions 是 doctor 命令的全部参数。
 type doctorOptions struct {
@@ -28,7 +24,6 @@ type doctorOptions struct {
 	Password         string
 	KnownHosts       string
 	CephSrc          string
-	Format           string
 	Question         string
 	Timeout          int
 	MaxRounds        int
@@ -98,7 +93,7 @@ func init() {
 	f.StringVar(&doctorOpts.Password, "password", "", "SSH 密码（不推荐）")
 	f.StringVar(&doctorOpts.KnownHosts, "known-hosts", "", "known_hosts 路径，留空不校验")
 	f.StringVar(&doctorOpts.CephSrc, "ceph-src", "", "本地 Ceph 源码目录")
-	f.StringVar(&doctorOpts.Format, "format", "text", "报告格式 (text, brief, json)")
+
 	f.StringVar(&doctorOpts.Question, "question", "", "自定义诊断问题，留空做全面体检")
 	f.IntVar(&doctorOpts.Timeout, "timeout", 600, "总超时（秒）")
 	f.IntVar(&doctorOpts.MaxRounds, "max-rounds", 20, "最大调查轮数")
@@ -147,13 +142,6 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	model := opt.Model
 	baseURL := opt.BaseURL
 
-	// 格式在联网前校验，参数写错时立即报错；dry-run 不使用报告格式。
-	if !opt.DryRun && !opt.SelfCheck {
-		if _, err := doctor.Render(&report.Report{}, doctor.Format(opt.Format)); err != nil {
-			return err
-		}
-	}
-
 	// 4. 连接阶段用总超时；交互模式下每轮另设新预算，见 runInteractive。
 	//    不能整个进程共用一个会过期的 context：首轮一旦跑满，
 	//    后续每次追问都会立刻 context deadline exceeded。
@@ -188,65 +176,77 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		return runSelfCheck(ctx, cluster)
 	}
 
-	// 6. 组装并运行诊断。
-	//    Doctor 的构造被包成闭包：交互模式下要等用户真正提问时才建，
-	//    否则"进来什么也没问"也会消耗一次模型客户端构造与 API Key 校验。
-	newDoctor := func(key string) *doctor.Doctor {
-		return doctor.New(doctor.Config{
-			Cluster: cluster,
-			// MaxRetries 用负数表示「采用默认值」。零值意味着不重试，
-			// 一次 5xx 或限流就会让整次诊断白跑。--llm-retries 可覆盖。
-			Model: llm.NewClient(llm.Config{
-				BaseURL:     baseURL,
-				APIKey:      key,
-				Model:       model,
-				Temperature: opt.Temperature,
-				MaxTokens:   opt.MaxTokens,
-				Timeout:     time.Duration(opt.LLMTimeout) * time.Second,
-				MaxRetries:  opt.LLMRetries,
-			}),
-			SourceDir:        opt.CephSrc,
-			MaxRounds:        opt.MaxRounds,
-			MaxToolCalls:     opt.MaxToolCalls,
-			MaxPerTool:       opt.MaxPerTool,
-			MaxCallsPerRound: opt.MaxCallsPerRound,
-			OnProgress: func(msg string) {
-				fmt.Fprintf(os.Stderr, "  · %s\n", msg)
-			},
-		})
+	// 6. 组装调查助手。
+	//    交互模式下延迟到用户真正提问时才建立，避免"进来什么都没问"
+	//    就消耗一次探测、拓扑与模型客户端构造。
+	newAgent := func(key string) (*doctor.Agent, error) {
+		return openAgent(ctx, cluster, llm.NewClient(llm.Config{
+			BaseURL:     baseURL,
+			APIKey:      key,
+			Model:       model,
+			Temperature: opt.Temperature,
+			MaxTokens:   opt.MaxTokens,
+			Timeout:     time.Duration(opt.LLMTimeout) * time.Second,
+			MaxRetries:  opt.LLMRetries,
+		}), opt)
 	}
 
 	if opt.Interactive {
-		return runInteractiveSession(cmd.Context(), ctx, newDoctor, apiKey, needKey, opt)
+		return runInteractive(cmd.Context(), newAgent, apiKey, needKey, opt)
 	}
 
-	modelName := model
-	if modelName == "" {
-		modelName = "默认模型"
+	// 非交互：一条问题、一次回答，然后退出。
+	if needKey && apiKey == "" {
+		return fmt.Errorf("未找到 API Key：请设置环境变量 %s，或在配置文件 doctor.llm.api_key 中填写", opt.APIKeyEnv)
 	}
-	fmt.Fprintf(os.Stderr, "🤖 开始诊断（模型 %s，最多 %d 轮 / %d 次工具调用）\n",
-		modelName, opt.MaxRounds, opt.MaxToolCalls)
-	d := newDoctor(apiKey)
-
-	rep, err := d.Run(ctx, doctor.Task{Question: opt.Question})
+	a, err := newAgent(apiKey)
 	if err != nil {
 		return err
 	}
-
-	// 7. 报告写 stdout，进度与提示写 stderr。
-	formatted, err := doctor.Render(rep, doctor.Format(opt.Format))
+	question := strings.TrimSpace(opt.Question)
+	if question == "" {
+		question = "简单说明一下这个集群现在的状态，有异常就说异常。"
+	}
+	reply, err := a.Send(ctx, question)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, formatted)
-
-	// 8. 有严重问题时直接以退出码 2 结束：报告已打印，不再返回错误避免重复输出。
-	if rank := report.SeverityRank(rep.Severity); rank >= report.SeverityRank("high") {
-		fmt.Fprintf(os.Stderr, "\n⚠ 发现 %s 级问题（退出码 %d）\n", rep.Severity, doctorExitFindings)
-		os.Exit(doctorExitFindings)
-	}
+	fmt.Fprintln(os.Stdout, reply)
 	return nil
 }
+
+// openAgent 建立会话：探测能力、发现拓扑、取一次健康快照，然后构造助手。
+func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel, opt resolvedDoctorOptions) (*doctor.Agent, error) {
+	fmt.Fprintln(os.Stderr, "🔎 连接集群，采集初始信息 ...")
+	snap, err := doctor.CollectSnapshot(ctx, cluster, opt.CephSrc)
+	if err != nil {
+		return nil, err
+	}
+	reg := tools.RegistryFrom(tools.All(snapshotRunner{cluster}, opt.CephSrc))
+	return doctor.NewAgent(doctor.AgentConfig{
+		Model:            model,
+		Registry:         reg,
+		SystemPrompt:     doctor.AgentPrompt(snap),
+		OnEvent:          func(msg string) { fmt.Fprintf(os.Stderr, "  · %s\n", msg) },
+		MaxRounds:        opt.MaxRounds,
+		MaxCallsPerRound: opt.MaxCallsPerRound,
+		MaxCallsPerTurn:  opt.MaxToolCalls,
+	}), nil
+}
+
+// snapshotRunner 把 access.Cluster 适配成工具层需要的 Runner。
+type snapshotRunner struct{ c *access.Cluster }
+
+func (r snapshotRunner) Run(ctx context.Context, node string, argv []string) (access.Output, error) {
+	return r.c.Run(ctx, node, argv)
+}
+func (r snapshotRunner) Capabilities(ctx context.Context, node string) access.Capabilities {
+	return r.c.Capabilities(ctx, node)
+}
+func (r snapshotRunner) Topology(ctx context.Context) (*access.Topology, error) {
+	return r.c.Topology(ctx)
+}
+func (r snapshotRunner) Nodes() []string { return r.c.Nodes() }
 
 // runDoctorDryRun 只做能力探测与拓扑发现，打印摘要后返回，不调用模型。
 func runDoctorDryRun(ctx context.Context, cluster *access.Cluster) error {

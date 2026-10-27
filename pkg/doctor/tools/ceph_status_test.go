@@ -85,9 +85,10 @@ func TestCephStatusHintsOnDegraded(t *testing.T) {
 	if len(res.Hints) == 0 {
 		t.Fatal("expected hints for degraded cluster")
 	}
+	// 现在优先引导按告警原文定向排查，而不是固定指向某个工具。
 	joined := strings.Join(res.Hints, " ")
-	if !strings.Contains(joined, "pg_detail") {
-		t.Errorf("expected hint to pg_detail, got %v", res.Hints)
+	if !strings.Contains(joined, "定向") && !strings.Contains(joined, "osd_detail") && !strings.Contains(joined, "pg_detail") {
+		t.Errorf("expected an actionable hint, got %v", res.Hints)
 	}
 }
 

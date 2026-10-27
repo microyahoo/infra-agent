@@ -23,7 +23,6 @@ func newFlagCmd(t *testing.T) *cobra.Command {
 	f.String("key", "", "")
 	f.String("known-hosts", "", "")
 	f.String("ceph-src", "", "")
-	f.String("format", "text", "")
 	f.String("question", "", "")
 	f.Int("timeout", 600, "")
 	f.Int("max-rounds", 20, "")
@@ -108,8 +107,6 @@ doctor:
     max_per_tool: 8
   ceph:
     source_dir: /data/ceph-src
-  report:
-    format: json
   timeout: 900
   interactive: true
 `)
@@ -141,8 +138,8 @@ doctor:
 	if opt.CephSrc != "/data/ceph-src" {
 		t.Errorf("CephSrc = %q", opt.CephSrc)
 	}
-	if opt.Format != "json" || opt.Timeout != 900 || !opt.Interactive {
-		t.Errorf("report/run = %s/%d/%v", opt.Format, opt.Timeout, opt.Interactive)
+	if opt.Timeout != 900 || !opt.Interactive {
+		t.Errorf("run = %d/%v", opt.Timeout, opt.Interactive)
 	}
 }
 
@@ -155,8 +152,6 @@ doctor:
     user: ceph-admin
   loop:
     max_rounds: 40
-  report:
-    format: json
 `)
 	cmd := newFlagCmd(t)
 	doctorOpts = doctorOptions{Host: "10.0.0.1"}
@@ -166,9 +161,6 @@ doctor:
 	if err := cmd.Flags().Set("max-rounds", "7"); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Flags().Set("format", "brief"); err != nil {
-		t.Fatal(err)
-	}
 
 	opt := resolveDoctorOptions(cmd)
 	if opt.Port != 2200 {
@@ -176,9 +168,6 @@ doctor:
 	}
 	if opt.MaxRounds != 7 {
 		t.Errorf("MaxRounds = %d, want flag value 7", opt.MaxRounds)
-	}
-	if opt.Format != "brief" {
-		t.Errorf("Format = %q, want flag value brief", opt.Format)
 	}
 	// 未在命令行指定的项仍取配置值
 	if opt.User != "ceph-admin" {
