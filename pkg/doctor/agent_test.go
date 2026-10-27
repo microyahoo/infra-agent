@@ -368,8 +368,9 @@ func TestFirstTurnUsesNoTools(t *testing.T) {
 	if len(specCounts) == 0 {
 		t.Fatal("model not called")
 	}
-	if specCounts[0] != 0 {
-		t.Errorf("first turn should receive no tools, got %d", specCounts[0])
+	// 首轮只提供 need_more_info 一个工具：既能直接答，也能请求继续查。
+	if specCounts[0] != 1 {
+		t.Errorf("first turn should receive exactly need_more_info, got %d", specCounts[0])
 	}
 	if st.calls != 0 {
 		t.Errorf("no tool should run on the first turn, got %d", st.calls)
@@ -396,8 +397,8 @@ func TestLaterTurnsGetTools(t *testing.T) {
 	if _, err := a.Send(context.Background(), "集群为啥 warn"); err != nil {
 		t.Fatal(err)
 	}
-	if specCounts[0] != 0 {
-		t.Errorf("first turn specs = %d, want 0", specCounts[0])
+	if specCounts[0] != 1 {
+		t.Errorf("first turn specs = %d, want 1 (need_more_info)", specCounts[0])
 	}
 
 	if _, err := a.Send(context.Background(), "查一下 OSD 日志"); err != nil {
@@ -430,4 +431,74 @@ func (m *countingModel) Chat(_ context.Context, _ []llm.Message, specs []llm.Too
 		return r, nil
 	}
 	return m.reply, nil
+}
+
+// 首轮信息不足时，模型调用 need_more_info，系统在同一次交互里继续调查，
+// 不需要用户再催一轮。
+func TestAgentAutoContinuesWhenMoreInfoNeeded(t *testing.T) {
+	st := &stubTool{name: "probe", res: &tools.Result{Summary: "osd.44 在 CrashLoop"}}
+	reg := tools.NewRegistry()
+	reg.Register(st)
+	// 再注册两个，这样"完整工具集"与"仅 need_more_info"在数量上可区分
+	reg.Register(&stubTool{name: "x", res: &tools.Result{Summary: "x"}})
+	reg.Register(&stubTool{name: "y", res: &tools.Result{Summary: "y"}})
+
+	var specCounts []int
+	model := &countingModel{
+		script: []llm.Reply{
+			// 首轮：判断需要继续查
+			{ToolCalls: []llm.ToolCall{{ID: "m1", Name: needMoreToolName, Args: `{"reason":"需要看 OSD 状态"}`}}},
+			// 第二轮：此时应已拿到完整工具集
+			{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: "{}"}}},
+			{Content: "osd.44 在 CrashLoop。"},
+		},
+		specs: &specCounts,
+	}
+	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 5, MaxCallsPerTurn: 10})
+
+	reply, err := a.Send(context.Background(), "集群为啥 warn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "CrashLoop") {
+		t.Errorf("reply = %q", reply)
+	}
+	if st.calls != 1 {
+		t.Errorf("should have investigated in the same turn, tool calls = %d", st.calls)
+	}
+	// 首轮只有 1 个工具，之后是全量
+	if specCounts[0] != 1 {
+		t.Errorf("first round specs = %d, want 1", specCounts[0])
+	}
+	if specCounts[1] != 3 {
+		t.Errorf("after need_more_info the full toolset (3 tools) should be available, got %d", specCounts[1])
+	}
+	// need_more_info 本身不产生证据
+	if a.Evidence().Len() != 1 {
+		t.Errorf("evidence = %d, want 1 (only the real probe)", a.Evidence().Len())
+	}
+}
+
+// 首轮能直接回答时，不应继续调查。
+func TestAgentStopsWhenAnswerIsEnough(t *testing.T) {
+	st := &stubTool{name: "probe", res: &tools.Result{Summary: "x"}}
+	reg := tools.NewRegistry()
+	reg.Register(st)
+
+	var specCounts []int
+	model := &countingModel{
+		script: []llm.Reply{{Content: "结论：一切正常。"}},
+		specs:  &specCounts,
+	}
+	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 5})
+
+	if _, err := a.Send(context.Background(), "集群怎么样"); err != nil {
+		t.Fatal(err)
+	}
+	if st.calls != 0 {
+		t.Errorf("no investigation needed, tool calls = %d", st.calls)
+	}
+	if len(specCounts) != 1 {
+		t.Errorf("should finish in one model call, got %d", len(specCounts))
+	}
 }

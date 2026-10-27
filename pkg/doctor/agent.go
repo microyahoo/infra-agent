@@ -97,15 +97,15 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 	a.msgs = append(a.msgs, llm.Message{Role: llm.RoleUser, Content: text})
 	specs := a.toolSpecs()
 
-	// 会话第一条回答不给工具。
+	// 会话第一条：先只用已知信息回答。
 	//
-	// 这正是"一个人被问到问题时的做法"：先看手上已有的信息作答，
-	// 而不是先跑去执行一串命令。已知信息不够时，模型会直接说需要查什么，
-	// 用户再决定要不要花这个时间——后续轮次工具照常可用。
-	firstTurn := len(a.roundsSeen) == 0
+	// 但"先答"不能变成"答一半就停下等用户催"。因此首轮给它一个
+	// need_more_info：如果结论不足以回答问题，模型调用它，系统就在
+	// 同一次交互里打开全部诊断工具继续查，而不是把话头抛回给用户。
+	answerFirst := len(a.roundsSeen) == 0
 	a.roundsSeen = append(a.roundsSeen, text)
-	if firstTurn {
-		specs = nil
+	if answerFirst {
+		specs = []llm.ToolSpec{needMoreInfoSpec()}
 	}
 
 	turnStart := a.chain.Len()
@@ -122,6 +122,21 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 		}
 
 		a.event(fmt.Sprintf("第 %d 轮：模型已返回", rounds))
+
+		// 首轮表示"信息不够，要继续查"：同一轮交互内切到完整工具集，
+		// 不需要用户再催一次。
+		if answerFirst && containsTool(reply.ToolCalls, needMoreToolName) {
+			answerFirst = false
+			specs = a.toolSpecs()
+			a.msgs = append(a.msgs, llm.Message{Role: llm.RoleAssistant, ToolCalls: reply.ToolCalls})
+			for _, tc := range reply.ToolCalls {
+				a.msgs = append(a.msgs, llm.ToolResultMessage(tc.ID,
+					"已为你打开全部诊断工具。继续调查，直到能回答用户的问题；"+
+						"不需要再询问用户是否继续。"))
+			}
+			a.event("模型判断需要继续核查，已自动继续")
+			continue
+		}
 
 		// 没有工具调用 = 模型在回答。这就是本轮的最终答复。
 		if len(reply.ToolCalls) == 0 {
@@ -277,6 +292,33 @@ func truncateForLog(s string) string {
 		return s
 	}
 	return string(r[:80]) + "…"
+}
+
+// needMoreToolName 是首轮用的"需要继续调查"信号。
+const needMoreToolName = "need_more_info"
+
+// needMoreInfoSpec 只在首轮提供。
+//
+// 它存在的目的，是把"要不要继续查"从用户手里拿回来：模型自己判断，
+// 系统自动放行工具，用户不必再回一句"继续"。
+func needMoreInfoSpec() llm.ToolSpec {
+	return llm.ToolSpec{
+		Name: needMoreToolName,
+		Description: "当已有信息不足以回答用户的问题、需要继续查询集群时调用它。" +
+			"系统会立即为你打开全部诊断工具，你会接着调查。" +
+			"不要用它来征求用户同意——需要查就直接调用；只有确实需要用户澄清需求时才用文字提问。",
+		Schema: json.RawMessage(`{"type":"object","properties":{"reason":{"type":"string","description":"还需要查什么、为什么"}}}`),
+	}
+}
+
+// containsTool 判断这批工具调用里是否包含指定工具。
+func containsTool(calls []llm.ToolCall, name string) bool {
+	for _, c := range calls {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // maxToolResultChars 限制单条工具结果进入上下文的长度。
