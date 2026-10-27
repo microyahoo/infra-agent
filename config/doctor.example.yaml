@@ -179,3 +179,46 @@ notifiers:
 patrol:
   enabled: false
   interval: 30
+# ============================================================================
+# 飞书机器人（infra-agent serve）
+#
+# 在群里 @ 机器人提问，它会调用同一套诊断能力调查集群并回复。
+# 使用长连接接收事件，不需要公网 IP 或回调地址。
+#
+# 飞书开放平台配置步骤：
+#   1. 创建「自建应用」，记录 App ID / App Secret
+#   2. 添加「机器人」能力
+#   3. 事件订阅 → 选择「长连接」→ 添加事件 im.message.receive_v1
+#   4. 权限：im:message、im:message:send_as_bot
+#   5. 把机器人拉进群
+# ============================================================================
+feishu:
+  bot:
+    app_id: ""            # 或环境变量 FEISHU_APP_ID
+    app_secret: ""        # 或环境变量 FEISHU_APP_SECRET
+    # 长连接模式不需要下列两项，留空即可
+    verification_token: ""
+    encrypt_key: ""
+
+    # 默认查哪套集群（对应下面 clusters 的键名）
+    default_cluster: ""
+
+    # 群 → 集群绑定；不配则用 default_cluster
+    # chat_clusters:
+    #   oc_xxxxxxxxxxxxxxxx: "stor-01"
+
+    # 多套集群。每个群或每条消息（"集群名:问题"）指定查哪套
+    clusters: {}
+      # stor-01:
+      #   host: 10.3.14.48
+      #   port: 22
+      #   user: root
+      #   private_key: ~/.ssh/id_rsa
+      #   known_hosts: ~/.ssh/known_hosts
+      # stor-02:
+      #   host: 10.4.1.10
+      #   user: root
+      #   private_key: ~/.ssh/id_rsa
+
+    # 会话空闲多久回收 SSH 连接（分钟）
+    idle_timeout_minutes: 30

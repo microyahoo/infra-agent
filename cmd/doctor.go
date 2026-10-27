@@ -11,7 +11,6 @@ import (
 	"github.com/microyahoo/infra-agent/pkg/doctor"
 	"github.com/microyahoo/infra-agent/pkg/doctor/access"
 	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
-	"github.com/microyahoo/infra-agent/pkg/doctor/tools"
 	"github.com/spf13/cobra"
 )
 
@@ -208,10 +207,17 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 // openAgent 建立会话：探测能力、发现拓扑、取一次健康快照，然后构造助手。
 func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel, opt resolvedDoctorOptions) (*doctor.Agent, error) {
-	runner := snapshotRunner{cluster}
 	fmt.Fprintln(os.Stderr, "🔎 采集集群信息 ...")
 
-	snap, err := doctor.CollectSnapshot(ctx, cluster, opt.CephSrc)
+	agent, snap, err := doctor.Open(ctx, doctor.OpenConfig{
+		Cluster:          cluster,
+		Model:            model,
+		SourceDir:        opt.CephSrc,
+		MaxRounds:        opt.MaxRounds,
+		MaxCallsPerRound: opt.MaxCallsPerRound,
+		MaxCallsPerTurn:  opt.MaxToolCalls,
+		OnEvent:          func(msg string) { fmt.Fprintf(os.Stderr, "  · %s\n", msg) },
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -222,17 +228,7 @@ func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel
 	if len(snap.Findings) > 0 {
 		fmt.Fprintf(os.Stderr, "  初步判断：%s\n", snap.Findings[0].Summary)
 	}
-	reg := tools.RegistryFrom(tools.All(runner, opt.CephSrc))
-	return doctor.NewAgent(doctor.AgentConfig{
-		Model:            model,
-		Registry:         reg,
-		SystemPrompt:     doctor.AgentPrompt(snap),
-		SeedEvidence:     snap.Evidence,
-		OnEvent:          func(msg string) { fmt.Fprintf(os.Stderr, "  · %s\n", msg) },
-		MaxRounds:        opt.MaxRounds,
-		MaxCallsPerRound: opt.MaxCallsPerRound,
-		MaxCallsPerTurn:  opt.MaxToolCalls,
-	}), nil
+	return agent, nil
 }
 
 // snapshotRunner 把 access.Cluster 适配成工具层需要的 Runner。
