@@ -174,3 +174,32 @@ func TestDenyPolicyWordBoundary(t *testing.T) {
 		t.Error("osd set should be rejected")
 	}
 }
+
+// netem 这类故障注入只能通过 tc 查询看到，必须放行只读形态。
+func TestDenyPolicyAllowsTCInspection(t *testing.T) {
+	p := DefaultDenyPolicy()
+	allowed := [][]string{
+		{"tc", "qdisc", "show"},
+		{"tc", "-s", "qdisc", "show"},
+		{"tc", "qdisc", "show", "dev", "enp1s0f0np0"},
+		{"tc", "class", "show"},
+		{"tc", "filter", "show", "dev", "eth0"},
+	}
+	for _, argv := range allowed {
+		if err := p.Check(argv); err != nil {
+			t.Errorf("read-only tc rejected: %v (%v)", argv, err)
+		}
+	}
+	rejected := [][]string{
+		{"tc", "qdisc", "add", "dev", "eth0", "root", "netem", "delay", "100ms"},
+		{"tc", "qdisc", "del", "dev", "eth0", "root"},
+		{"tc", "qdisc", "change", "dev", "eth0", "root", "netem", "loss", "10%"},
+		{"tc", "qdisc", "replace", "dev", "eth0", "root", "netem"},
+		{"tc", "qdisc"},
+	}
+	for _, argv := range rejected {
+		if err := p.Check(argv); err == nil {
+			t.Errorf("LEAK: mutating tc allowed: %v", argv)
+		}
+	}
+}

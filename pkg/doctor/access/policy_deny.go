@@ -42,6 +42,8 @@ func DefaultDenyPolicy() *Policy {
 			"df": true, "du": true, "lsblk": true, "blkid": true, "findmnt": true,
 			"smartctl": true, "nvme": true, "dmesg": true, "journalctl": true,
 			"ss": true, "ip": true, "netstat": true, "ping": true, "ethtool": true,
+			// tc 只允许查看队列规则；netem 这类故障注入是网络类问题的直接证据。
+			"tc":    true,
 			"nproc": true, "lscpu": true, "uname": true, "hostname": true,
 			// 文件与文本观测
 			"ls": true, "cat": true, "tail": true, "head": true, "grep": true,
@@ -135,6 +137,11 @@ func (p *Policy) checkDeny(argv []string) error {
 		return err
 	}
 
+	// tc 只放行查询形态：qdisc/class/filter show。add/del/change/replace 会改配置。
+	if bin == "tc" {
+		return checkTCReadOnly(argv)
+	}
+
 	// ceph tell 的特殊形态：
 	//   ceph tell <daemon> <cmd>  —— 无 -f json 之类的后缀
 	// 允许常见只读命令，拒绝其它（防止 perf reset / injectargs 之类的漏网）。
@@ -143,6 +150,31 @@ func (p *Policy) checkDeny(argv []string) error {
 	}
 
 	return nil
+}
+
+// checkTCReadOnly 只允许 tc 的查询子命令。
+//
+//	tc qdisc show / tc -s qdisc show / tc class show / tc filter show dev X
+//
+// add、del、change、replace 会修改网络配置，一律拒绝。
+func checkTCReadOnly(argv []string) error {
+	if len(argv) < 2 {
+		return fmt.Errorf("rejected: tc 需要子命令")
+	}
+	for _, a := range argv[1:] {
+		switch a {
+		case "add", "del", "delete", "change", "replace", "link":
+			return fmt.Errorf("rejected: tc %q 会修改网络配置", a)
+		}
+	}
+	// 必须显式带上查询动词；只有 "tc qdisc" 这种不完整写法一律拒绝。
+	for _, a := range argv[1:] {
+		switch a {
+		case "show", "list", "ls":
+			return nil
+		}
+	}
+	return fmt.Errorf("rejected: tc 只允许 show/list 查询，收到 %v", argv[1:])
 }
 
 // matchesMutating 判断命令串里是否出现了变更模式。
