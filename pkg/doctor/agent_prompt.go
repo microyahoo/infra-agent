@@ -46,9 +46,22 @@ func AgentPrompt(s Snapshot) string {
 		b.WriteString(fmt.Sprintf("- 概要：%s\n", s.Summary))
 	}
 
+	// 结论优先：先把代码能确定的关联摆出来。
+	if len(s.Findings) > 0 {
+		b.WriteString("\n## 已经能看出来的（确定性分析，直接据此回答）\n\n")
+		for i, f := range s.Findings {
+			b.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, f.Summary))
+			b.WriteString(fmt.Sprintf("   - 依据：%s\n", f.Why))
+			b.WriteString(fmt.Sprintf("   - 下一步：%s\n", f.Next))
+		}
+		b.WriteString("\n上面这些是代码从告警里直接算出来的，不需要你再验证事实本身。" +
+			"你的任务是：判断它们是否足以回答用户的问题——足够就直接答，" +
+			"需要补充证据时只查与结论直接相关的那一两项。\n")
+	}
+
 	if detail := strings.TrimSpace(s.HealthDetail); detail != "" && s.Health != "HEALTH_OK" {
-		b.WriteString("\n### 当前告警明细（会话开始时采集，可直接引用）\n\n```\n")
-		b.WriteString(detail)
+		b.WriteString("\n### 告警明细（节选）\n\n```\n")
+		b.WriteString(truncateLines(detail, 12))
 		b.WriteString("\n```\n")
 	} else if ev := strings.TrimSpace(s.RecentHealthEvents); ev != "" {
 		b.WriteString("\n### 最近的健康变更（会话开始时从日志里查到）\n\n```\n")

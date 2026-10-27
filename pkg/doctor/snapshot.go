@@ -89,9 +89,9 @@ func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 	hout, herr := c.Run(ctx, entry, collectHealthArgv)
 	s.Evidence = append(s.Evidence, evidenceFrom(c, entry, collectHealthArgv, hout, herr, "snapshot:ceph_health"))
 	if herr == nil {
-		detail := strings.TrimSpace(hout.Stdout)
+		// 保留完整明细供关联分析；展示时再截断（见 AgentPrompt）。
 		if s.Health != "HEALTH_OK" {
-			s.HealthDetail = truncateLines(detail, maxHealthDetailLines)
+			s.HealthDetail = strings.TrimSpace(hout.Stdout)
 		}
 	} else {
 		s.Failures = append(s.Failures, fmt.Sprintf("ceph health detail 失败：%v", herr))
@@ -104,6 +104,7 @@ func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 		}
 	}
 
+	s.Findings = correlate(s)
 	assignEvidenceIDs(&s)
 	return s, nil
 }
@@ -192,12 +193,17 @@ type Snapshot struct {
 	Health    string
 	Summary   string
 	// HealthDetail 是 ceph health detail 原文（非健康状态下采集）。
+	// 完整保留：关联分析需要看到全部条目，截断只能发生在展示时。
 	HealthDetail string
 	// RecentHealthEvents 是最近日志里的健康变更（健康但用户报告异常时使用）。
 	RecentHealthEvents string
 	Capabilities       access.Capabilities
 	Topology           *access.Topology
 	Failures           []string
+
+	// Findings 是从告警里直接推出来的确定结论（见 correlate.go）。
+	// 放在提示词最前面，模型才有明确的起点，而不是从零开始扫工具。
+	Findings []Finding
 
 	// Evidence 是采集阶段产生的证据。
 	// 交给 Agent 预置进证据链，模型就能直接引用这些数据，
