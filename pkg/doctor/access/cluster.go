@@ -39,6 +39,9 @@ type Cluster struct {
 	// toolboxPod / monContainer 缓存容器路由需要定位的目标，避免每次命令都查一遍。
 	toolboxPod   string
 	monContainer string
+
+	// probeReported 表示已经向用户展示过一次探测进度。
+	probeReported bool
 }
 
 func newCluster(cc *clusterConn) *Cluster {
@@ -334,7 +337,17 @@ func (c *Cluster) Capabilities(ctx context.Context, node string) Capabilities {
 		return caps
 	}
 	tr := &clusterTransport{cluster: c, node: node}
-	caps = probeCapabilitiesWithProgress(ctx, tr, c.conn.cfg.OnProgress)
+	// 只在第一次探测时输出进度。后续节点探测是"查询新节点顺带做的检查"，
+	// 每次都打印一遍会让人误以为在重复做初始化。
+	var progress func(string)
+	c.mu.Lock()
+	if !c.probeReported {
+		c.probeReported = true
+		progress = c.conn.cfg.OnProgress
+	}
+	c.mu.Unlock()
+
+	caps = probeCapabilitiesWithProgress(ctx, tr, progress)
 	c.mu.Lock()
 	c.caps[node] = caps
 	c.mu.Unlock()

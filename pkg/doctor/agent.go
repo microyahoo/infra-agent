@@ -28,6 +28,7 @@ type Agent struct {
 	msgs    []llm.Message
 	onEvent func(string)
 
+	roundsSeen       []string // 已处理过的用户输入，用于判断是否首轮
 	maxRounds        int
 	maxCallsPerRound int
 	maxCallsPerTurn  int
@@ -61,8 +62,14 @@ func NewAgent(cfg AgentConfig) *Agent {
 	if a.maxRounds <= 0 {
 		a.maxRounds = 12
 	}
+	// 默认每轮只允许一个工具调用。
+	//
+	// 这不是为了限流，而是为了让调查真正是"看一步走一步"：
+	// 允许多个并行调用时，模型会在同一轮里一次规划四五个命令，
+	// 它根本没有读过任何一个结果，只是把想查的都先发出去。
+	// 限定为 1 之后，下一轮必然是在看到上一轮输出之后才做出的决定。
 	if a.maxCallsPerRound <= 0 {
-		a.maxCallsPerRound = 3
+		a.maxCallsPerRound = 1
 	}
 	if a.maxCallsPerTurn <= 0 {
 		a.maxCallsPerTurn = 20
@@ -90,6 +97,17 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 	a.msgs = append(a.msgs, llm.Message{Role: llm.RoleUser, Content: text})
 	specs := a.toolSpecs()
 
+	// 会话第一条回答不给工具。
+	//
+	// 这正是"一个人被问到问题时的做法"：先看手上已有的信息作答，
+	// 而不是先跑去执行一串命令。已知信息不够时，模型会直接说需要查什么，
+	// 用户再决定要不要花这个时间——后续轮次工具照常可用。
+	firstTurn := len(a.roundsSeen) == 0
+	a.roundsSeen = append(a.roundsSeen, text)
+	if firstTurn {
+		specs = nil
+	}
+
 	turnStart := a.chain.Len()
 	rounds := 0
 	callsThisTurn := 0
@@ -116,8 +134,9 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 			calls = calls[:a.maxCallsPerRound]
 			a.event(fmt.Sprintf("本轮请求 %d 个工具，只执行 %d 个", len(reply.ToolCalls), len(calls)))
 			a.msgs = append(a.msgs, llm.Message{
-				Role:    llm.RoleUser,
-				Content: fmt.Sprintf("（本轮另有 %d 个工具调用未执行。先看已返回的结果，再决定是否还需要。）", skipped),
+				Role: llm.RoleUser,
+				Content: fmt.Sprintf("（本轮另有 %d 个工具调用未执行。每次只做一件事："+
+					"先看这次返回的结果，再决定下一步要不要查、查什么。）", skipped),
 			})
 		}
 

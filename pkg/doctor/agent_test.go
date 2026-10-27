@@ -303,3 +303,131 @@ func TestAgentSkipsDuplicateCalls(t *testing.T) {
 		t.Errorf("evidence = %d, want 1", a.Evidence().Len())
 	}
 }
+
+// 默认每轮只允许一个工具调用：模型必须看到上一次结果才能决定下一步。
+// 允许多个并行调用时，它会在同一轮把想查的都发出去，等于没有"看结果再决定"。
+func TestAgentDefaultOneCallPerRound(t *testing.T) {
+	a := NewAgent(AgentConfig{})
+	if a.maxCallsPerRound != 1 {
+		t.Errorf("default maxCallsPerRound = %d, want 1", a.maxCallsPerRound)
+	}
+}
+
+// 同一轮发出多个调用时，只有第一个执行，其余被丢弃并告知模型。
+func TestAgentDropsExtraCallsInSameRound(t *testing.T) {
+	first := &stubTool{name: "a", res: &tools.Result{Summary: "a"}}
+	second := &stubTool{name: "b", res: &tools.Result{Summary: "b"}}
+	third := &stubTool{name: "c", res: &tools.Result{Summary: "c"}}
+	reg := tools.NewRegistry()
+	reg.Register(first)
+	reg.Register(second)
+	reg.Register(third)
+
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{
+			{ID: "1", Name: "a", Args: "{}"},
+			{ID: "2", Name: "b", Args: "{}"},
+			{ID: "3", Name: "c", Args: "{}"},
+		}},
+		{Content: "done"},
+	}}
+	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 3, MaxCallsPerTurn: 10})
+
+	if _, err := a.Send(context.Background(), "q"); err != nil {
+		t.Fatal(err)
+	}
+	if first.calls != 1 {
+		t.Errorf("first should run once, got %d", first.calls)
+	}
+	if second.calls != 0 || third.calls != 0 {
+		t.Errorf("extra calls must not run: b=%d c=%d", second.calls, third.calls)
+	}
+	if a.Evidence().Len() != 1 {
+		t.Errorf("evidence = %d, want 1", a.Evidence().Len())
+	}
+}
+
+// 会话第一条回答不调用工具：先用手上已有的信息作答。
+// 这对应"人被问到问题时先看已知信息，而不是先跑命令"。
+func TestFirstTurnUsesNoTools(t *testing.T) {
+	st := &stubTool{name: "probe", res: &tools.Result{Summary: "x"}}
+	reg := tools.NewRegistry()
+	reg.Register(st)
+
+	var specCounts []int
+	model := &countingModel{reply: llm.Reply{Content: "基于已知信息：node05 有 OSD 在 CrashLoop。"}, specs: &specCounts}
+	a := newAgentForTest(model, reg)
+
+	reply, err := a.Send(context.Background(), "集群为啥 warn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, "node05") {
+		t.Errorf("reply = %q", reply)
+	}
+	if len(specCounts) == 0 {
+		t.Fatal("model not called")
+	}
+	if specCounts[0] != 0 {
+		t.Errorf("first turn should receive no tools, got %d", specCounts[0])
+	}
+	if st.calls != 0 {
+		t.Errorf("no tool should run on the first turn, got %d", st.calls)
+	}
+}
+
+// 后续轮次工具恢复可用。
+func TestLaterTurnsGetTools(t *testing.T) {
+	st := &stubTool{name: "probe", res: &tools.Result{Summary: "osd.44 CrashLoop"}}
+	reg := tools.NewRegistry()
+	reg.Register(st)
+
+	var specCounts []int
+	model := &countingModel{
+		script: []llm.Reply{
+			{Content: "初步看是 node05 的问题，要看 OSD 日志吗？"},
+			{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: "{}"}}},
+			{Content: "osd.44 在 CrashLoop。"},
+		},
+		specs: &specCounts,
+	}
+	a := newAgentForTest(model, reg)
+
+	if _, err := a.Send(context.Background(), "集群为啥 warn"); err != nil {
+		t.Fatal(err)
+	}
+	if specCounts[0] != 0 {
+		t.Errorf("first turn specs = %d, want 0", specCounts[0])
+	}
+
+	if _, err := a.Send(context.Background(), "查一下 OSD 日志"); err != nil {
+		t.Fatal(err)
+	}
+	if len(specCounts) < 2 || specCounts[1] == 0 {
+		t.Errorf("later turns should receive tools, got %v", specCounts)
+	}
+	if st.calls != 1 {
+		t.Errorf("tool should run on the follow-up, got %d", st.calls)
+	}
+}
+
+// countingModel 记录每次调用拿到的工具数量。
+type countingModel struct {
+	script []llm.Reply
+	reply  llm.Reply
+	specs  *[]int
+	i      int
+}
+
+func (m *countingModel) Chat(_ context.Context, _ []llm.Message, specs []llm.ToolSpec) (llm.Reply, error) {
+	*m.specs = append(*m.specs, len(specs))
+	if len(m.script) > 0 {
+		if m.i >= len(m.script) {
+			return llm.Reply{}, fmt.Errorf("script exhausted")
+		}
+		r := m.script[m.i]
+		m.i++
+		return r, nil
+	}
+	return m.reply, nil
+}

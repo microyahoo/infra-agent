@@ -22,6 +22,10 @@ func AgentPrompt(s Snapshot) string {
 - 用户对你的回答提出质疑、要求更精确：先回看已经查到的结果。**不要重新全面检查一遍**。
   要么基于已有证据给出更具体的结论，要么只补查缺少的那一点，要么直接说明需要什么信息才能更准。
 - 用户只是在交流（评价、追问背景、澄清需求）：直接回答，不要调工具。
+- 会话的第一条回答**不许调用工具**：先用上面已经采集到的信息作答。
+  如果这些信息不足以回答，就直接说明"需要查 X"——用户会决定要不要查。
+- **一次只查一件事**：调用一个工具、看结果、再决定下一个。
+  不要一轮把想查的都发出去——那样等于没看结果。
 - 一次没查清就照实说，并说清楚下一步需要什么。编造比说不知道糟糕得多。
 
 ## 回答要求
@@ -44,6 +48,13 @@ func AgentPrompt(s Snapshot) string {
 	b.WriteString(fmt.Sprintf("- 当前健康：%s\n", orDash(s.Health)))
 	if s.Summary != "" {
 		b.WriteString(fmt.Sprintf("- 概要：%s\n", s.Summary))
+	}
+
+	// Rook 层的事实：daemon 的问题首先体现在 pod 状态上。
+	if ph := strings.TrimSpace(s.PodHealth); ph != "" {
+		b.WriteString("\n## Pod 状态（会话开始时采集）\n\n")
+		b.WriteString(ph)
+		b.WriteString("\n")
 	}
 
 	// 结论优先：先把代码能确定的关联摆出来。
