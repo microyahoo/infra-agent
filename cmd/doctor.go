@@ -24,7 +24,6 @@ type doctorOptions struct {
 	Password         string
 	KnownHosts       string
 	CephSrc          string
-	Profile          string
 	Question         string
 	Timeout          int
 	MaxRounds        int
@@ -85,7 +84,6 @@ func init() {
 	f.StringVar(&doctorOpts.Password, "password", "", "SSH 密码（不推荐）")
 	f.StringVar(&doctorOpts.KnownHosts, "known-hosts", "", "known_hosts 路径，留空不校验")
 	f.StringVar(&doctorOpts.CephSrc, "ceph-src", "", "本地 Ceph 源码目录")
-	f.StringVar(&doctorOpts.Profile, "profile", "auto", "诊断 profile：auto / ceph / generic")
 
 	f.StringVar(&doctorOpts.Question, "question", "", "单次提问的内容（配合 --interactive=false）")
 	f.IntVar(&doctorOpts.Timeout, "timeout", 600, "总超时（秒）")
@@ -211,15 +209,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 // openAgent 建立会话：探测能力、发现拓扑、取一次健康快照，然后构造助手。
 func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel, opt resolvedDoctorOptions) (*doctor.Agent, error) {
 	runner := snapshotRunner{cluster}
+	fmt.Fprintln(os.Stderr, "🔎 采集集群信息 ...")
 
-	// 选择诊断 profile：显式指定，或按只读探测自动识别。
-	profile, err := doctor.ResolveProfile(ctx, opt.Profile, runner)
-	if err != nil {
-		return nil, err
-	}
-	fmt.Fprintf(os.Stderr, "🔎 采集集群信息（profile: %s）...\n", profile.Name())
-
-	snap, err := profile.Snapshot(ctx, runner, opt.CephSrc)
+	snap, err := doctor.CollectSnapshot(ctx, cluster, opt.CephSrc)
 	if err != nil {
 		return nil, err
 	}
@@ -230,11 +222,11 @@ func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel
 	if len(snap.Findings) > 0 {
 		fmt.Fprintf(os.Stderr, "  初步判断：%s\n", snap.Findings[0].Summary)
 	}
-	reg := tools.RegistryFrom(profile.Tools(runner, opt.CephSrc))
+	reg := tools.RegistryFrom(tools.All(runner, opt.CephSrc))
 	return doctor.NewAgent(doctor.AgentConfig{
 		Model:            model,
 		Registry:         reg,
-		SystemPrompt:     doctor.AgentPromptWithHints(snap, profile.Hints(snap)),
+		SystemPrompt:     doctor.AgentPrompt(snap),
 		SeedEvidence:     snap.Evidence,
 		OnEvent:          func(msg string) { fmt.Fprintf(os.Stderr, "  · %s\n", msg) },
 		MaxRounds:        opt.MaxRounds,

@@ -11,13 +11,10 @@ import (
 //
 // 与旧版本的区别：不再规定"必须提交结构化结论"，也不要求每轮都产出报告。
 // 它只交代环境事实和对话原则，怎么查、查多深由模型按用户的话决定。
-func AgentPrompt(s Snapshot) string { return AgentPromptWithHints(s, "") }
-
-// AgentPromptWithHints 在通用提示词后追加 profile 提供的领域说明。
-func AgentPromptWithHints(s Snapshot, hints string) string {
+func AgentPrompt(s Snapshot) string {
 	var b strings.Builder
 
-	b.WriteString(`你是一套存储集群的运维助手。你通过只读工具访问集群，和用户对话。
+	b.WriteString(`你是这套 Ceph 集群的运维助手。你通过只读工具访问集群，和用户对话。
 
 ## 怎么对话
 
@@ -151,12 +148,6 @@ func AgentPromptWithHints(s Snapshot, hints string) string {
 		for _, f := range s.Failures {
 			b.WriteString("- " + f + "\n")
 		}
-	}
-
-	if strings.TrimSpace(hints) != "" {
-		b.WriteString("\n")
-		b.WriteString(hints)
-		b.WriteString("\n")
 	}
 
 	return b.String()
