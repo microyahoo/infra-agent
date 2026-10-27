@@ -56,6 +56,19 @@ func AgentPrompt(s Snapshot) string {
 		b.WriteString("\n```\n")
 	}
 
+	// 列出已采集的数据与对应证据 ID。不写清楚，模型会为了拿 ID 再查一遍。
+	if len(s.Evidence) > 0 {
+		b.WriteString("\n## 会话开始时已采集（已有证据 ID，可直接引用，不要重复执行）\n\n")
+		for _, ev := range s.Evidence {
+			status := ""
+			if ev.ErrorKind != "" {
+				status = "（失败：" + ev.ErrorMsg + "）"
+			}
+			b.WriteString(fmt.Sprintf("- `%s` → %s%s\n", ev.Tool, ev.ID, status))
+		}
+		b.WriteString("\n这些命令的结果已经在上下文里。**除非用户问的是「现在变了吗」，否则不要再执行同样的查询。**\n")
+	}
+
 	b.WriteString("\n## 环境\n\n")
 	b.WriteString(fmt.Sprintf("- 执行后端：%s\n", orDash(s.Capabilities.Backend)))
 	if s.Capabilities.CephVersion != "" {

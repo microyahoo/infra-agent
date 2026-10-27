@@ -60,6 +60,15 @@ func (c *Chain) Add(e Evidence) Evidence {
 	if e.StartedAt.IsZero() {
 		e.StartedAt = time.Now()
 	}
+	// 已带 ID 的证据（例如会话开始时预置的快照证据）保留其 ID，
+	// 保证提示词里给出的编号与链里的一致——否则模型引用的 ID 对不上。
+	if e.ID != "" {
+		if _, exists := c.byID[e.ID]; !exists {
+			c.byID[e.ID] = len(c.items)
+			c.items = append(c.items, e)
+			return e
+		}
+	}
 	e.ID = fmt.Sprintf("ev-%03d", c.nextID)
 	c.nextID++
 

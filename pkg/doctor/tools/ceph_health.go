@@ -35,8 +35,8 @@ func (t *cephHealthTool) Name() string { return "ceph_health" }
 
 func (t *cephHealthTool) Description() string {
 	return "读取集群健康告警的完整明细（ceph health detail）：每条告警的代码、严重度、说明与受影响对象。" +
-		"集群不是 HEALTH_OK 时必须先调用它——ceph_status 只给出健康码和告警代码，" +
-		"具体是什么问题、影响哪些 OSD/PG/池，只有这里能看到。"
+		"注意：会话开始时已自动采集过一次，结果在系统提示词里；" +
+		"当用户问的是「现在有没有新告警」或怀疑状态已变化时才需要重新调用。"
 }
 
 func (t *cephHealthTool) Schema() json.RawMessage {

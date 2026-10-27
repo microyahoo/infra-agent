@@ -42,6 +42,9 @@ type AgentConfig struct {
 	MaxRounds        int          // 单次用户输入内最多几轮模型调用
 	MaxCallsPerRound int
 	MaxCallsPerTurn  int
+	// SeedEvidence 是会话开始前已经采集到的证据（快照）。
+	// 预置进证据链后，模型可以直接引用，不必重跑同样的命令来换取 evidence_id。
+	SeedEvidence []loop.Evidence
 }
 
 // NewAgent 创建对话式调查助手。
@@ -63,6 +66,9 @@ func NewAgent(cfg AgentConfig) *Agent {
 	}
 	if a.maxCallsPerTurn <= 0 {
 		a.maxCallsPerTurn = 20
+	}
+	for _, ev := range cfg.SeedEvidence {
+		a.chain.Add(ev)
 	}
 	a.msgs = []llm.Message{{Role: llm.RoleSystem, Content: cfg.SystemPrompt}}
 	return a
@@ -124,6 +130,15 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 				continue
 			}
 			callsThisTurn++
+			// 相同工具 + 相同参数已经执行过：不再真的跑一遍，
+			// 直接把"已有结果"告诉模型。这是不重复劳动的结构性保证。
+			if a.chain.SeenCall(tc.Name, parseArgs(tc.Args)) {
+				a.event(fmt.Sprintf("%s 已执行过，跳过", tc.Name))
+				a.msgs = append(a.msgs, llm.ToolResultMessage(tc.ID,
+					`{"skipped":true,"message":"该调用已执行过，结果在上文。"}`))
+				continue
+			}
+			a.chain.MarkCall(tc.Name, parseArgs(tc.Args))
 			content := a.runTool(ctx, tc)
 			a.msgs = append(a.msgs, llm.ToolResultMessage(tc.ID, content))
 		}

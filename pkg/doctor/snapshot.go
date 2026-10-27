@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/pkg/doctor/loop"
 )
 
 // collectStatusArgv 是会话开始时读取集群状态的命令。
@@ -64,15 +65,18 @@ func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 	}
 
 	out, err := c.Run(ctx, entry, collectStatusArgv)
+	s.Evidence = append(s.Evidence, evidenceFrom(c, entry, collectStatusArgv, out, err, "snapshot:ceph_status"))
 	if err != nil {
 		s.Health = "unknown"
 		s.Failures = append(s.Failures, fmt.Sprintf("ceph status 失败：%v", err))
+		assignEvidenceIDs(&s)
 		return s, nil
 	}
 	st, perr := parseSnapshotStatus(out.Stdout)
 	if perr != nil {
 		s.Health = "unknown"
 		s.Failures = append(s.Failures, fmt.Sprintf("解析 ceph status 失败：%v", perr))
+		assignEvidenceIDs(&s)
 		return s, nil
 	}
 	s.Health = st.health
@@ -82,7 +86,9 @@ func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 	}
 
 	// 始终取一次健康明细：慢心跳这类告警是间歇性的，采样瞬间可能已经恢复。
-	if hout, herr := c.Run(ctx, entry, collectHealthArgv); herr == nil {
+	hout, herr := c.Run(ctx, entry, collectHealthArgv)
+	s.Evidence = append(s.Evidence, evidenceFrom(c, entry, collectHealthArgv, hout, herr, "snapshot:ceph_health"))
+	if herr == nil {
 		detail := strings.TrimSpace(hout.Stdout)
 		if s.Health != "HEALTH_OK" {
 			s.HealthDetail = truncateLines(detail, maxHealthDetailLines)
@@ -98,7 +104,48 @@ func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 		}
 	}
 
+	assignEvidenceIDs(&s)
 	return s, nil
+}
+
+// assignEvidenceIDs 给采集阶段的证据编号。
+// 必须在提示词生成之前完成，否则模型看到的编号与实际链里的对不上。
+func assignEvidenceIDs(s *Snapshot) {
+	for i := range s.Evidence {
+		if s.Evidence[i].ID == "" {
+			s.Evidence[i].ID = fmt.Sprintf("ev-%03d", i+1)
+		}
+	}
+}
+
+// evidenceFrom 把一次采集结果包装成证据。
+func evidenceFrom(c Collector, node string, argv []string, out access.Output, err error, tool string) loop.Evidence {
+	ev := loop.Evidence{
+		Tool:      tool,
+		Node:      node,
+		Command:   access.BuildCommand(argv),
+		RawOutput: out.Stdout,
+		Duration:  out.Duration,
+		ExitCode:  out.ExitCode,
+	}
+	if ev.RawOutput == "" {
+		ev.RawOutput = out.Stderr
+	}
+	ev.Summary = summarizeOutput(out.Stdout)
+	if err != nil {
+		ev.ErrorKind = "failed"
+		ev.ErrorMsg = err.Error()
+	}
+	return ev
+}
+
+// summarizeOutput 取输出的前若干行作为摘要。
+func summarizeOutput(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "（无输出）"
+	}
+	return truncateLines(s, 6)
 }
 
 // recentHealthEvents 从最近的集群日志里筛出健康变更行。
@@ -151,6 +198,11 @@ type Snapshot struct {
 	Capabilities       access.Capabilities
 	Topology           *access.Topology
 	Failures           []string
+
+	// Evidence 是采集阶段产生的证据。
+	// 交给 Agent 预置进证据链，模型就能直接引用这些数据，
+	// 而不必为了拿到 evidence_id 再执行一遍同样的命令。
+	Evidence []loop.Evidence
 }
 
 // statusView 是从 ceph status 提取的关键字段。

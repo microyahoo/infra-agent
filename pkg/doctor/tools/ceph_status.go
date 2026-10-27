@@ -40,7 +40,9 @@ func NewCephStatus(r Runner) Tool { return &cephStatusTool{r: r} }
 func (t *cephStatusTool) Name() string { return "ceph_status" }
 
 func (t *cephStatusTool) Description() string {
-	return "获取集群整体状态：健康码、健康检查明细、mon quorum、OSD up/in 数量、PG 状态分布、容量使用率。这是每次诊断的起点。"
+	return "获取集群整体状态：健康码、健康检查明细、mon quorum、OSD up/in 数量、PG 状态分布、容量使用率。" +
+		"注意：会话开始时已自动采集过一次，结果在系统提示词的集群背景里；" +
+		"除非用户问的是当前状态是否已经变化，否则不必重复调用。"
 }
 
 func (t *cephStatusTool) Schema() json.RawMessage {

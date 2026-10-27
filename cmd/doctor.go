@@ -218,6 +218,7 @@ func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel
 		Model:            model,
 		Registry:         reg,
 		SystemPrompt:     doctor.AgentPrompt(snap),
+		SeedEvidence:     snap.Evidence,
 		OnEvent:          func(msg string) { fmt.Fprintf(os.Stderr, "  · %s\n", msg) },
 		MaxRounds:        opt.MaxRounds,
 		MaxCallsPerRound: opt.MaxCallsPerRound,

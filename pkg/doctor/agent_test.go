@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
+	"github.com/microyahoo/infra-agent/pkg/doctor/loop"
 	"github.com/microyahoo/infra-agent/pkg/doctor/tools"
 )
 
@@ -238,5 +239,67 @@ func TestAgentPromptCarriesRecentHealthEvents(t *testing.T) {
 	p := AgentPrompt(s)
 	if !strings.Contains(p, "osd.13") {
 		t.Error("recent health events should reach the prompt")
+	}
+}
+
+// 快照证据应预置进链，并出现在提示词里 —— 否则模型为了拿到 evidence_id
+// 会把 ceph_status / ceph_health 再跑一遍，用户看到的就是"没啥变化"。
+func TestSnapshotEvidenceIsSeededAndAdvertised(t *testing.T) {
+	// 真实路径里 CollectSnapshot 会给它们编号。
+	seed := []loop.Evidence{
+		{ID: "ev-001", Tool: "snapshot:ceph_status", Command: "ceph status -f json", Summary: "HEALTH_WARN"},
+		{ID: "ev-002", Tool: "snapshot:ceph_health", Command: "ceph health detail", Summary: "Slow OSD heartbeats"},
+	}
+	snap := Snapshot{
+		ClusterID: "x", Health: "HEALTH_WARN",
+		HealthDetail: "HEALTH_WARN Slow OSD heartbeats (longest 1349ms)",
+		Evidence:     seed,
+	}
+	p := AgentPrompt(snap)
+	if !strings.Contains(p, "ev-001") || !strings.Contains(p, "ev-002") {
+		t.Errorf("prompt should list seeded evidence ids:\n%s", p)
+	}
+	if !strings.Contains(p, "不要重复执行") {
+		t.Error("prompt should tell the model not to re-run them")
+	}
+
+	st := &stubTool{name: "ceph_status", res: &tools.Result{Summary: "x"}}
+	reg := tools.NewRegistry()
+	reg.Register(st)
+	model := &scriptedModel{replies: []llm.Reply{{Content: "直接回答"}}}
+	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: p, SeedEvidence: seed})
+
+	if a.Evidence().Len() != 2 {
+		t.Errorf("seed evidence not registered: %d", a.Evidence().Len())
+	}
+	// 第一轮就能看到已采集的证据
+	if _, err := a.Send(context.Background(), "为啥 warn"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(model.seenMsgs[0][0].Content, "ev-001") {
+		t.Error("model should see seeded evidence ids in its system prompt")
+	}
+}
+
+// 相同工具 + 相同参数已执行过时，不重复执行，直接把已有结果告诉模型。
+func TestAgentSkipsDuplicateCalls(t *testing.T) {
+	st := &stubTool{name: "probe", res: &tools.Result{Summary: "osd.13 慢"}}
+	reg := tools.NewRegistry()
+	reg.Register(st)
+
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "probe", Args: `{"x":1}`}}},
+		{ToolCalls: []llm.ToolCall{{ID: "c2", Name: "probe", Args: `{"x":1}`}}}, // 相同参数
+		{Content: "结论"},
+	}}
+	a := newAgentForTest(model, reg)
+	if _, err := a.Send(context.Background(), "q"); err != nil {
+		t.Fatal(err)
+	}
+	if st.calls != 1 {
+		t.Errorf("duplicate call should be skipped, actual executions = %d", st.calls)
+	}
+	if a.Evidence().Len() != 1 {
+		t.Errorf("evidence = %d, want 1", a.Evidence().Len())
 	}
 }
