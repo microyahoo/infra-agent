@@ -29,26 +29,21 @@ const interactiveHelp = `
   :report [brief]  重新打印最近一次报告（默认完整版，brief 为精简版）
   :evidence        列出目前已收集的全部证据
   :quit / :exit    退出
+  :refresh         重新采集集群状态（健康会变，拓扑不会）
 其他任意输入都作为新的问题交给模型继续调查。
+多行输入请以空行结束（便于粘贴 ceph -s 的整段输出）。
 `
 
-// runInteractiveSession 建立会话、跑首轮，然后进入问答循环。
+// runInteractiveSession 进入交互问答。
 //
-// base 用于 Ctrl-C 传播，connectCtx 负责建连阶段；每一轮调查各自新建预算，
+// 刻意不做任何"进来先体检一遍"的预检：交互模式下用户还没说要查什么，
+// 此时探测能力、发现拓扑、跑一轮全面调查都是替用户做决定，既慢又常常答非所问。
+// 一切都推迟到用户提出第一个问题时再发生——包括会话建立本身。
+//
+// base 用于 Ctrl-C 传播；每一轮调查各自新建预算，
 // 因为交互会话可能持续很久，共用一个 context 会在首轮跑满后让后续全部失败。
-func runInteractiveSession(base, connectCtx context.Context, d *doctor.Doctor, opt resolvedDoctorOptions) error {
-	sess, err := d.OpenSession(connectCtx)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "🔎 首轮调查 ...")
-	first, err := withTurnTimeout(base, opt.Timeout, func(ctx context.Context) (*loop.Result, error) {
-		return sess.Ask(ctx, opt.Question)
-	})
-	if err != nil {
-		return err
-	}
-	return runInteractive(base, sess, first, opt)
+func runInteractiveSession(base, _ context.Context, newDoctor func(string) *doctor.Doctor, apiKey string, needKey bool, opt resolvedDoctorOptions) error {
+	return runInteractive(base, newDoctor, apiKey, needKey, opt)
 }
 
 // withTurnTimeout 为一轮调查新建独立超时。
@@ -65,17 +60,16 @@ func withTurnTimeout[T any](base context.Context, seconds int, fn func(context.C
 //
 // 复用同一次会话的对话历史与证据链：模型能引用之前查到的内容，
 // 而不是每问一次就从头再查一遍。
-func runInteractive(ctx context.Context, sess *doctor.Session, first *loop.Result, opt resolvedDoctorOptions) error {
+func runInteractive(ctx context.Context, newDoctor func(string) *doctor.Doctor, apiKey string, needKey bool, opt resolvedDoctorOptions) error {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	lastReport, _ := sess.Report(first, nil)
-	if lastReport != nil {
-		fmt.Fprintln(os.Stdout, renderOrEmpty(lastReport))
-	}
 	fmt.Fprint(os.Stderr, interactiveBanner)
 
-	cur := first
+	// 会话按需建立：第一次提问时才连接、探测、取拓扑并跑调查。
+	var sess *doctor.Session
+	var cur *loop.Result
+	var lastReport *report.Report
 	for {
 		fmt.Fprint(os.Stderr, "\n❯ ")
 		line, ok := readInput(in)
@@ -95,6 +89,12 @@ func runInteractive(ctx context.Context, sess *doctor.Session, first *loop.Resul
 		case ":evidence":
 			printEvidence(cur)
 			continue
+		case ":refresh":
+			if sess != nil {
+				sess.Refresh(ctx)
+				fmt.Fprintln(os.Stderr, "已重新采集集群状态")
+			}
+			continue
 		case ":report", ":r":
 			if lastReport != nil {
 				fmt.Fprintln(os.Stdout, renderOrEmpty(lastReport))
@@ -109,8 +109,30 @@ func runInteractive(ctx context.Context, sess *doctor.Session, first *loop.Resul
 			continue
 		}
 
+		// 首个问题才建立会话（模型客户端 + 探测 + 拓扑 + 快照），之后复用。
+		if sess == nil {
+			if needKey && apiKey == "" {
+				fmt.Fprintf(os.Stderr, "✗ 未找到 API Key：请设置环境变量 %s，或在配置文件 doctor.llm.api_key 中填写\n", opt.APIKeyEnv)
+				continue
+			}
+			d := newDoctor(apiKey)
+			var serr error
+			sess, serr = withTurnTimeout(ctx, opt.Timeout, func(turnCtx context.Context) (*doctor.Session, error) {
+				fmt.Fprintln(os.Stderr, "🔎 首次连接：探测能力、发现拓扑 ...")
+				return d.OpenSession(turnCtx)
+			})
+			if serr != nil {
+				fmt.Fprintf(os.Stderr, "✗ 建立会话失败：%v\n", serr)
+				sess = nil
+				continue
+			}
+		}
+
 		fmt.Fprintf(os.Stderr, "🔎 正在调查：%s\n", summarizeInput(line))
 		next, err := withTurnTimeout(ctx, opt.Timeout, func(turnCtx context.Context) (*loop.Result, error) {
+			if cur == nil {
+				return sess.Ask(turnCtx, line)
+			}
 			return sess.FollowUp(turnCtx, cur, line)
 		})
 		if err != nil {

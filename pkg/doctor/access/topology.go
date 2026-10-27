@@ -118,12 +118,21 @@ func buildTopology(ctx context.Context, tr transport, fsid string, nodes []osdNo
 	byHost := map[string]*TopoNode{}
 	var order []string
 
+	// 一次拉全部 metadata（ceph osd metadata -f json 返回数组）。
+	// 逐个 OSD 查在 120 个 OSD 的集群上要 120 次往返，实测比批量慢两个数量级。
+	bulk := fetchAllMetadata(ctx, tr)
+
 	for _, n := range nodes {
-		out, _, code := tr.exec(ctx, []string{"ceph", "osd", "metadata", fmt.Sprint(n.ID), "-f", "json"})
-		if code != 0 {
-			topo.OSDs = append(topo.OSDs, OSDPlacement{ID: n.ID, Host: n.Host, Status: n.Status})
-			order = appendNode(byHost, order, n.Host, n.ID)
-			continue
+		out, ok := bulk[n.ID]
+		if !ok {
+			// 批量失败时退回单个查询；仍失败则保留最小信息。
+			var code int
+			out, _, code = tr.exec(ctx, []string{"ceph", "osd", "metadata", fmt.Sprint(n.ID), "-f", "json"})
+			if code != 0 {
+				topo.OSDs = append(topo.OSDs, OSDPlacement{ID: n.ID, Host: n.Host, Status: n.Status})
+				order = appendNode(byHost, order, n.Host, n.ID)
+				continue
+			}
 		}
 		p, err := parseOSDMetadata(n.ID, out)
 		if err != nil {
@@ -142,6 +151,30 @@ func buildTopology(ctx context.Context, tr transport, fsid string, nodes []osdNo
 		topo.Nodes = append(topo.Nodes, *byHost[host])
 	}
 	return topo
+}
+
+// fetchAllMetadata 用一条命令取回所有 OSD 的 metadata。
+// 返回 map[osdID]原始JSON；失败时返回空 map，由调用方回退到逐个查询。
+func fetchAllMetadata(ctx context.Context, tr transport) map[int]string {
+	out, _, code := tr.exec(ctx, []string{"ceph", "osd", "metadata", "-f", "json"})
+	if code != 0 || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal([]byte(out), &arr); err != nil {
+		return nil
+	}
+	res := make(map[int]string, len(arr))
+	for _, raw := range arr {
+		var head struct {
+			ID int `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			continue
+		}
+		res[head.ID] = string(raw)
+	}
+	return res
 }
 
 // appendNode 把 OSD 挂到对应节点上；节点首次出现时记录其位置以保持顺序。

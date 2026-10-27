@@ -330,7 +330,7 @@ func (c *Cluster) Topology(ctx context.Context) (*Topology, error) {
 
 	tr := &clusterTransport{cluster: c, node: entry}
 	if p := c.conn.cfg.OnProgress; p != nil {
-		p(fmt.Sprintf("发现 %d 个 OSD，逐个查询所在节点与磁盘", len(nodes)))
+		p(fmt.Sprintf("发现 %d 个 OSD，拉取节点与磁盘映射", len(nodes)))
 	}
 	topo := buildTopology(ctx, tr, fsid, nodes)
 

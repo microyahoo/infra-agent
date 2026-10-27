@@ -131,13 +131,16 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 
 	// 2. 非 --dry-run 时读取 API Key；放在建连之前，参数错误无需等待网络。
+	//    交互模式下延迟到第一次提问再校验：用户可能只是进去看看 :help 就退出，
+	//    不该因为没配 key 连界面都进不去。
 	apiKey := ""
-	if !opt.DryRun && !opt.SelfCheck {
+	needKey := !opt.DryRun && !opt.SelfCheck
+	if needKey {
 		apiKey = opt.APIKey
 		if apiKey == "" {
 			apiKey = os.Getenv(opt.APIKeyEnv)
 		}
-		if apiKey == "" {
+		if apiKey == "" && !opt.Interactive {
 			return fmt.Errorf("未找到 API Key：请设置环境变量 %s，或在配置文件 doctor.llm.api_key 中填写", opt.APIKeyEnv)
 		}
 	}
@@ -186,39 +189,44 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	}
 
 	// 6. 组装并运行诊断。
+	//    Doctor 的构造被包成闭包：交互模式下要等用户真正提问时才建，
+	//    否则"进来什么也没问"也会消耗一次模型客户端构造与 API Key 校验。
+	newDoctor := func(key string) *doctor.Doctor {
+		return doctor.New(doctor.Config{
+			Cluster: cluster,
+			// MaxRetries 用负数表示「采用默认值」。零值意味着不重试，
+			// 一次 5xx 或限流就会让整次诊断白跑。--llm-retries 可覆盖。
+			Model: llm.NewClient(llm.Config{
+				BaseURL:     baseURL,
+				APIKey:      key,
+				Model:       model,
+				Temperature: opt.Temperature,
+				MaxTokens:   opt.MaxTokens,
+				Timeout:     time.Duration(opt.LLMTimeout) * time.Second,
+				MaxRetries:  opt.LLMRetries,
+			}),
+			SourceDir:        opt.CephSrc,
+			MaxRounds:        opt.MaxRounds,
+			MaxToolCalls:     opt.MaxToolCalls,
+			MaxPerTool:       opt.MaxPerTool,
+			MaxCallsPerRound: opt.MaxCallsPerRound,
+			OnProgress: func(msg string) {
+				fmt.Fprintf(os.Stderr, "  · %s\n", msg)
+			},
+		})
+	}
+
+	if opt.Interactive {
+		return runInteractiveSession(cmd.Context(), ctx, newDoctor, apiKey, needKey, opt)
+	}
+
 	modelName := model
 	if modelName == "" {
 		modelName = "默认模型"
 	}
 	fmt.Fprintf(os.Stderr, "🤖 开始诊断（模型 %s，最多 %d 轮 / %d 次工具调用）\n",
 		modelName, opt.MaxRounds, opt.MaxToolCalls)
-
-	d := doctor.New(doctor.Config{
-		Cluster: cluster,
-		// MaxRetries 用负数表示「采用默认值」。零值意味着不重试，
-		// 一次 5xx 或限流就会让整次诊断白跑。--llm-retries 可覆盖。
-		Model: llm.NewClient(llm.Config{
-			BaseURL:     baseURL,
-			APIKey:      apiKey,
-			Model:       model,
-			Temperature: opt.Temperature,
-			MaxTokens:   opt.MaxTokens,
-			Timeout:     time.Duration(opt.LLMTimeout) * time.Second,
-			MaxRetries:  opt.LLMRetries,
-		}),
-		SourceDir:        opt.CephSrc,
-		MaxRounds:        opt.MaxRounds,
-		MaxToolCalls:     opt.MaxToolCalls,
-		MaxPerTool:       opt.MaxPerTool,
-		MaxCallsPerRound: opt.MaxCallsPerRound,
-		OnProgress: func(msg string) {
-			fmt.Fprintf(os.Stderr, "  · %s\n", msg)
-		},
-	})
-
-	if opt.Interactive {
-		return runInteractiveSession(cmd.Context(), ctx, d, opt)
-	}
+	d := newDoctor(apiKey)
 
 	rep, err := d.Run(ctx, doctor.Task{Question: opt.Question})
 	if err != nil {

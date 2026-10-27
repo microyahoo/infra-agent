@@ -120,3 +120,27 @@ func TestWithTurnTimeoutRespectsBaseCancellation(t *testing.T) {
 	}
 	_ = time.Second
 }
+
+// 交互模式在用户提问之前不应做任何探测/调查。
+// 这是 runInteractive 的契约：会话懒建立。
+func TestInteractiveBannerMentionsLazyStart(t *testing.T) {
+	for _, want := range []string{":help", ":evidence", ":report", ":quit", "空行"} {
+		if !strings.Contains(interactiveBanner+interactiveHelp, want) {
+			t.Errorf("interactive help missing %q", want)
+		}
+	}
+	if !strings.Contains(interactiveHelp, ":refresh") {
+		t.Error("help should document :refresh")
+	}
+}
+
+// 交互模式在首个问题之前不得建立会话（也就不会探测/拓扑/调模型）。
+// 这里用 "是否走到 :quit 之前" 间接验证：banner 里不能出现"首轮调查"。
+func TestInteractiveStartsIdle(t *testing.T) {
+	if strings.Contains(interactiveBanner, "首轮调查") {
+		t.Error("interactive mode must not announce a pre-run investigation")
+	}
+	if !strings.Contains(interactiveBanner, ":quit") {
+		t.Error("banner should show how to exit immediately")
+	}
+}
