@@ -45,7 +45,7 @@ func TestExploreListsDir(t *testing.T) {
 
 func TestExploreFindsLogs(t *testing.T) {
 	tr := newFakeRunner()
-	tr.on("node-3", []string{"find", "/var/lib/rook/rook-ceph/log", "-name", "*.log", "-type", "f", "-printf", "%s %p\n"},
+	tr.on("node-3", []string{"find", "/var/lib/rook/rook-ceph/log", "-name", "*.log", "-type", "f", "-printf", `%s %p\n`},
 		"1516803 /var/lib/rook/rook-ceph/log/ceph-osd.9.log\n2048 /var/lib/rook/rook-ceph/log/ceph-mon.a.log\n")
 
 	res, _, err := NewExplore(tr).Execute(context.Background(),
@@ -101,5 +101,15 @@ func TestExploreRejectsPatternWithPath(t *testing.T) {
 		json.RawMessage(`{"dir":"/var/log","find_pattern":"../../etc/*"}`))
 	if err == nil {
 		t.Fatal("expected rejection")
+	}
+}
+
+// find 的 -printf 里必须是字面量 \n（两个字符），不能是真实换行——
+// 真实换行会被只读策略当控制字符拒绝，导致 find 模式永远失败。
+func TestExploreFindUsesLiteralNewline(t *testing.T) {
+	for _, a := range buildFindArgv("/var/log", "*.log") {
+		if strings.ContainsAny(a, "\n\r\x00") {
+			t.Errorf("argv contains a real control character: %q", a)
+		}
 	}
 }

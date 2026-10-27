@@ -149,7 +149,7 @@ func (t *exploreTool) find(ctx context.Context, node, dir, pattern string) (*Res
 		return nil, nil, fmt.Errorf("find_pattern 只能是不含路径分隔符的文件名模式，例如 *.log")
 	}
 
-	argv := []string{"find", dir, "-name", pattern, "-type", "f", "-printf", "%s %p\n"}
+	argv := buildFindArgv(dir, pattern)
 	out, err := t.r.Run(ctx, node, argv)
 	raw := newRaw(node, argv, out)
 	if err != nil {
@@ -272,4 +272,13 @@ func parseLsEntries(out string) []LsEntry {
 		return entries[i].Name < entries[j].Name
 	})
 	return entries
+}
+
+// buildFindArgv 构造 find 命令。
+//
+// -printf 的换行必须是字面量 \n（两个字符，由 find 自己解释），
+// 不能在 Go 字符串里写成真实换行——那会被只读策略当作控制字符拒绝，
+// 导致 find 模式永远失败。
+func buildFindArgv(dir, pattern string) []string {
+	return []string{"find", dir, "-name", pattern, "-type", "f", "-printf", `%s %p\n`}
 }

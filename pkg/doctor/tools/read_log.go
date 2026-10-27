@@ -18,7 +18,10 @@ const (
 
 // readLogPathPrefixes 是允许读取的路径前缀；与 access 策略保持同一口径，
 // 其中 /var/lib/rook 覆盖 rook-ceph 及其 logs 子目录。
-var readLogPathPrefixes = []string{"/var/log/ceph", "/var/lib/rook"}
+// 包含 /var/log 全量：排查网络/内核问题时 messages、syslog、kern.log
+// 是直接证据，只放 ceph 日志会让这类调查断路。
+// 敏感文件（私钥、shadow）由 access 策略单独拒绝。
+var readLogPathPrefixes = []string{"/var/log", "/var/lib/rook", "/var/lib/ceph", "/etc/ceph"}
 
 // ReadLogData 是 read_log 的结构化结果。
 type ReadLogData struct {
@@ -41,7 +44,7 @@ func (t *readLogTool) Description() string {
 }
 
 func (t *readLogTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"node":{"type":"string","description":"节点名"},"path":{"type":"string","description":"日志文件绝对路径，必须在 /var/log/ceph 或 /var/lib/rook 下"},"tail_lines":{"type":"integer","description":"读取尾部行数，默认 500，最大 5000"},"grep":{"type":"string","description":"可选，只保留包含该子串的行（区分大小写）"}},"required":["node","path"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"node":{"type":"string","description":"节点名"},"path":{"type":"string","description":"日志文件绝对路径，必须在 /var/log、/var/lib/rook、/var/lib/ceph 或 /etc/ceph 下"},"tail_lines":{"type":"integer","description":"读取尾部行数，默认 500，最大 5000"},"grep":{"type":"string","description":"可选，只保留包含该子串的行（区分大小写）"}},"required":["node","path"],"additionalProperties":false}`)
 }
 
 func (t *readLogTool) Execute(ctx context.Context, args json.RawMessage) (*Result, *Raw, error) {

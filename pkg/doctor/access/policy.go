@@ -57,7 +57,9 @@ func legacyAllowlistPolicy() *Policy {
 			"injectargs": true, "pg scrub": true, "pg repair": true, "pg deep-scrub": true,
 		},
 		// /var/lib/rook 覆盖任意命名空间下的 Rook 日志目录（/var/lib/rook/<ns>/log）。
-		pathPrefix: []string{"/var/log/ceph", "/var/lib/rook"},
+		// /var/log 全量放行：messages / syslog / kern.log 是网络与内核问题的
+		// 直接证据。敏感文件仍由 isSensitivePath 单独拒绝。
+		pathPrefix: []string{"/var/log", "/var/lib/rook", "/var/lib/ceph", "/etc/ceph"},
 	}
 }
 

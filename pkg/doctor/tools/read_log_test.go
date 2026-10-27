@@ -117,3 +117,18 @@ func TestReadLogAllowsRookLogsPath(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 排查网络/内核问题时必须能读系统日志。
+func TestReadLogAllowsSystemLogs(t *testing.T) {
+	tr := newFakeRunner()
+	tr.on("node-3", []string{"tail", "-n", "200", "/var/log/messages"}, "kernel: link down\n")
+
+	res, _, err := NewReadLog(tr).Execute(context.Background(),
+		json.RawMessage(`{"node":"node-3","path":"/var/log/messages","tail_lines":200}`))
+	if err != nil {
+		t.Fatalf("system logs should be readable: %v", err)
+	}
+	if !strings.Contains(res.Data.(*ReadLogData).Content, "link down") {
+		t.Errorf("content = %q", res.Data.(*ReadLogData).Content)
+	}
+}
