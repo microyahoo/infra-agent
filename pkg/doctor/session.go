@@ -74,13 +74,14 @@ func (s *Session) Report(res *loop.Result, runErr error) (*report.Report, error)
 // newRunner 用会话的快照与工具表构造一轮调查。
 func (s *Session) newRunner(question string) *loop.SessionRunner {
 	return loop.NewRunner(loop.RunnerConfig{
-		Model:        s.d.cfg.Model,
-		Registry:     s.reg,
-		SystemPrompt: SystemPrompt(s.snap.toSnapshot(), questionOf(question)),
-		MaxRounds:    s.d.cfg.MaxRounds,
-		MaxToolCalls: s.d.cfg.MaxToolCalls,
-		MaxPerTool:   s.d.cfg.MaxPerTool,
-		OnProgress:   s.d.cfg.OnProgress,
+		Model:            s.d.cfg.Model,
+		Registry:         s.reg,
+		SystemPrompt:     SystemPrompt(s.snap.toSnapshot(), questionOf(question)),
+		MaxRounds:        s.d.cfg.MaxRounds,
+		MaxToolCalls:     s.d.cfg.MaxToolCalls,
+		MaxPerTool:       s.d.cfg.MaxPerTool,
+		MaxCallsPerRound: s.d.cfg.MaxCallsPerRound,
+		OnProgress:       s.d.cfg.OnProgress,
 	})
 }
 

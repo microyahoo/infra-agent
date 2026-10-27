@@ -48,13 +48,14 @@ type Cluster interface {
 
 // Config 是 Doctor 的配置。
 type Config struct {
-	Cluster      Cluster
-	Model        llm.ChatModel
-	SourceDir    string // Ceph 源码目录，供源码查找工具使用，可为空
-	MaxRounds    int    // 调查最大轮数，0 表示使用 loop 默认值
-	MaxToolCalls int    // 工具调用总预算，0 表示使用 loop 默认值
-	MaxPerTool   int    // 单个工具的最大调用次数，0 表示使用 loop 默认值
-	OnProgress   func(msg string)
+	Cluster          Cluster
+	Model            llm.ChatModel
+	SourceDir        string // Ceph 源码目录，供源码查找工具使用，可为空
+	MaxRounds        int    // 调查最大轮数，0 表示使用 loop 默认值
+	MaxToolCalls     int    // 工具调用总预算，0 表示使用 loop 默认值
+	MaxPerTool       int    // 单个工具的最大调用次数，0 表示使用 loop 默认值
+	MaxCallsPerRound int    // 单轮并行工具调用上限，0 表示使用 loop 默认值
+	OnProgress       func(msg string)
 }
 
 // Doctor 把一次诊断所需的下游依赖固定下来，可被并发复用。
@@ -89,6 +90,7 @@ type snapshotResult struct {
 	ClusterID    string
 	Health       string
 	Summary      string
+	HealthDetail string
 	Capabilities access.Capabilities
 	Topology     *access.Topology
 	Failures     []string
@@ -107,6 +109,7 @@ func (s snapshotResult) toSnapshot() Snapshot {
 		ClusterID:    s.ClusterID,
 		Health:       s.Health,
 		Summary:      s.Summary,
+		HealthDetail: s.HealthDetail,
 		Capabilities: s.Capabilities,
 		Topology:     s.Topology,
 		Failures:     append([]string{}, s.Failures...),
@@ -138,13 +141,14 @@ func (d *Doctor) Run(ctx context.Context, task Task) (*Report, error) {
 
 	// 3. 调查循环。
 	lr := loop.NewRunner(loop.RunnerConfig{
-		Model:        d.cfg.Model,
-		Registry:     reg,
-		SystemPrompt: SystemPrompt(snap.toSnapshot(), question),
-		MaxRounds:    d.cfg.MaxRounds,
-		MaxToolCalls: d.cfg.MaxToolCalls,
-		MaxPerTool:   d.cfg.MaxPerTool,
-		OnProgress:   d.cfg.OnProgress,
+		Model:            d.cfg.Model,
+		Registry:         reg,
+		SystemPrompt:     SystemPrompt(snap.toSnapshot(), question),
+		MaxRounds:        d.cfg.MaxRounds,
+		MaxToolCalls:     d.cfg.MaxToolCalls,
+		MaxPerTool:       d.cfg.MaxPerTool,
+		MaxCallsPerRound: d.cfg.MaxCallsPerRound,
+		OnProgress:       d.cfg.OnProgress,
 	})
 	res, err := lr.Run(ctx, loop.Task{ClusterID: snap.ClusterID, Question: question})
 	return d.buildReport(runner, snap, startedAt, res, err)
@@ -325,11 +329,19 @@ func (d *Doctor) snapshotStatus(ctx context.Context, node string, s *snapshotRes
 		if herr != nil {
 			hev.ErrorKind, hev.ErrorMsg = errorKindMessage(herr)
 		}
+		// 把明细原文带进提示词：模型据此定向排查，而不是盲目跑全套工具。
+		if herr == nil {
+			s.HealthDetail = truncateLines(hout.Stdout, maxHealthDetailLines)
+		}
 		evidence = append(evidence, hev)
 	}
 
 	return evidence
 }
+
+// maxHealthDetailLines 限制健康明细进入提示词的行数。
+// 告警列表通常很短；个别集群可能有几十条，截断避免挤占上下文。
+const maxHealthDetailLines = 40
 
 // primaryNode 返回诊断入口节点。
 func (d *Doctor) primaryNode() string {

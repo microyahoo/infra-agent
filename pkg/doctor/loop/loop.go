@@ -18,6 +18,10 @@ const (
 	defaultMaxRounds    = 20
 	defaultMaxToolCalls = 60
 	defaultMaxPerTool   = 5
+	// defaultMaxCallsPerRound 限制单轮并行工具数。
+	// 不限的话模型会在第一轮就把五六个工具一起发出去，看起来像"全拍一遍"；
+	// 而调查应该是：形成一个假设 → 查一两处 → 看结果 → 再决定下一步。
+	defaultMaxCallsPerRound = 2
 
 	// compressAfterRound 从该轮次起开始压缩历史工具结果。
 	compressAfterRound = 3
@@ -71,7 +75,9 @@ type RunnerConfig struct {
 	MaxRounds    int // 默认 20
 	MaxToolCalls int // 默认 60
 	MaxPerTool   int // 默认 5
-	OnProgress   func(msg string)
+	// MaxCallsPerRound 限制单轮并行的工具调用数，默认 2。
+	MaxCallsPerRound int
+	OnProgress       func(msg string)
 }
 
 // Result 是一次排查的结果。
@@ -102,6 +108,7 @@ type SessionRunner struct {
 	maxRounds    int
 	maxToolCalls int
 	maxPerTool   int
+	maxPerRound  int
 	onProgress   func(msg string)
 }
 
@@ -116,6 +123,9 @@ func NewRunner(cfg RunnerConfig) *SessionRunner {
 	if cfg.MaxPerTool <= 0 {
 		cfg.MaxPerTool = defaultMaxPerTool
 	}
+	if cfg.MaxCallsPerRound <= 0 {
+		cfg.MaxCallsPerRound = defaultMaxCallsPerRound
+	}
 	return &SessionRunner{
 		model:        cfg.Model,
 		registry:     cfg.Registry,
@@ -123,6 +133,7 @@ func NewRunner(cfg RunnerConfig) *SessionRunner {
 		maxRounds:    cfg.MaxRounds,
 		maxToolCalls: cfg.MaxToolCalls,
 		maxPerTool:   cfg.MaxPerTool,
+		maxPerRound:  cfg.MaxCallsPerRound,
 		onProgress:   cfg.OnProgress,
 	}
 }
@@ -290,6 +301,21 @@ func (r *SessionRunner) runLoop(ctx context.Context, reg *tools.Registry, msgs [
 			msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: truncatedArgsHint})
 			r.progress(fmt.Sprintf("工具调用参数被长度限制截断（第 %d 次），已要求精简", res.TruncatedReplies))
 			continue
+		}
+
+		// 单轮并行上限：必须在登记 assistant 消息**之前**截断。
+		// assistant 消息里的 tool_calls 与实际返回的结果必须一一对应，
+		// 否则下一次请求会因"缺少对应 tool 结果"被服务端拒绝。
+		if len(reply.ToolCalls) > r.maxPerRound {
+			skipped := len(reply.ToolCalls) - r.maxPerRound
+			r.progress(fmt.Sprintf("第 %d 轮：模型一次请求 %d 个工具，按单轮上限只执行前 %d 个",
+				round, len(reply.ToolCalls), r.maxPerRound))
+			reply.ToolCalls = reply.ToolCalls[:r.maxPerRound]
+			msgs = append(msgs, llm.Message{
+				Role: llm.RoleUser,
+				Content: fmt.Sprintf("（有 %d 个工具调用因单轮上限未执行。先看已返回的结果，"+
+					"判断是否还需要继续——不要一次性把能查的都查一遍。）", skipped),
+			})
 		}
 
 		// 工具调用消息必须与结果消息配对，先登记 assistant 消息。

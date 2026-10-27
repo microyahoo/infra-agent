@@ -258,12 +258,13 @@ func TestLoopTotalToolCallBudgetBinds(t *testing.T) {
 	}}
 
 	r := NewRunner(RunnerConfig{
-		Model:        model,
-		Registry:     reg,
-		SystemPrompt: "s",
-		MaxRounds:    5,
-		MaxToolCalls: 3,
-		MaxPerTool:   50, // 不构成约束
+		Model:            model,
+		Registry:         reg,
+		SystemPrompt:     "s",
+		MaxRounds:        5,
+		MaxToolCalls:     3,
+		MaxPerTool:       50, // 不构成约束
+		MaxCallsPerRound: 20, // 本用例只验证总预算
 	})
 	res, err := r.Run(context.Background(), Task{Question: "q"})
 	if err != nil {
@@ -589,4 +590,88 @@ func (s *stubDataTool) Schema() json.RawMessage {
 }
 func (s *stubDataTool) Execute(_ context.Context, _ json.RawMessage) (*tools.Result, *tools.Raw, error) {
 	return &tools.Result{Summary: "带数据的工具", Data: s.data}, &tools.Raw{Node: "node-3"}, nil
+}
+
+// 单轮并行调用必须被限制：模型一口气发 5 个工具时，只执行前 N 个。
+// 这是"不要一上来就全查一遍"的结构性约束，不能靠提示词自觉。
+func TestLoopCapsToolCallsPerRound(t *testing.T) {
+	reg := tools.NewRegistry()
+	a := &stubTool{name: "a", res: &tools.Result{Summary: "a"}}
+	b := &stubTool{name: "b", res: &tools.Result{Summary: "b"}}
+	c := &stubTool{name: "c", res: &tools.Result{Summary: "c"}}
+	d := &stubTool{name: "d", res: &tools.Result{Summary: "d"}}
+	reg.Register(a)
+	reg.Register(b)
+	reg.Register(c)
+	reg.Register(d)
+
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{
+			{ID: "c1", Name: "a", Args: "{}"},
+			{ID: "c2", Name: "b", Args: "{}"},
+			{ID: "c3", Name: "c", Args: "{}"},
+			{ID: "c4", Name: "d", Args: "{}"},
+		}},
+		{ToolCalls: []llm.ToolCall{{ID: "f", Name: ConcludeToolName, Args: conclusionJSON("low", nil)}}},
+	}}
+
+	r := NewRunner(RunnerConfig{
+		Model: model, Registry: reg, SystemPrompt: "s",
+		MaxRounds: 5, MaxToolCalls: 20, MaxPerTool: 5,
+		MaxCallsPerRound: 2,
+	})
+	res, err := r.Run(context.Background(), Task{Question: "q"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Chain.Len(); got != 2 {
+		t.Errorf("only the first 2 calls should run, got %d", got)
+	}
+	if c.calls != 0 || d.calls != 0 {
+		t.Errorf("calls beyond the limit must not execute: c=%d d=%d", c.calls, d.calls)
+	}
+}
+
+// 截断后消息必须仍然配对：assistant 的 tool_calls 数量 == 后续 tool 结果数量。
+// 否则真实 API 会拒绝下一次请求。
+func TestLoopTruncationKeepsMessagesPaired(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(&stubTool{name: "a", res: &tools.Result{Summary: "a"}})
+	reg.Register(&stubTool{name: "b", res: &tools.Result{Summary: "b"}})
+	reg.Register(&stubTool{name: "c", res: &tools.Result{Summary: "c"}})
+
+	model := &scriptedModel{replies: []llm.Reply{
+		{ToolCalls: []llm.ToolCall{
+			{ID: "c1", Name: "a", Args: "{}"},
+			{ID: "c2", Name: "b", Args: "{}"},
+			{ID: "c3", Name: "c", Args: "{}"},
+		}},
+		{ToolCalls: []llm.ToolCall{{ID: "f", Name: ConcludeToolName, Args: conclusionJSON("low", nil)}}},
+	}}
+
+	r := NewRunner(RunnerConfig{
+		Model: model, Registry: reg, SystemPrompt: "s",
+		MaxRounds: 5, MaxToolCalls: 20, MaxPerTool: 5,
+		MaxCallsPerRound: 1,
+	})
+	if _, err := r.Run(context.Background(), Task{Question: "q"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 第二轮发给模型的消息里，每个 assistant tool_call 都必须有对应结果
+	second := model.seenMsgs[1]
+	pending := map[string]bool{}
+	for _, m := range second {
+		if m.Role == llm.RoleAssistant {
+			for _, tc := range m.ToolCalls {
+				pending[tc.ID] = true
+			}
+		}
+		if m.Role == llm.RoleTool {
+			delete(pending, m.ToolCallID)
+		}
+	}
+	if len(pending) != 0 {
+		t.Errorf("unanswered tool calls would be rejected by the API: %v", pending)
+	}
 }

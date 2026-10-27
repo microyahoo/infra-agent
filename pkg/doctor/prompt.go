@@ -14,9 +14,13 @@ import (
 // 快照只提供「起点信息」，不替代证据：模型若要引用集群状态，仍需自行调用工具
 // 取得证据 ID，从而保证最终报告里的命令与输出都能溯源。
 type Snapshot struct {
-	ClusterID    string
-	Health       string
-	Summary      string
+	ClusterID string
+	Health    string
+	Summary   string
+	// HealthDetail 是 ceph health detail 的原文（非健康状态下采集）。
+	// 必须进提示词：模型只有知道"到底哪条告警、数值多大"，
+	// 才能直接朝那个方向查，而不是把所有工具跑一遍去碰。
+	HealthDetail string
 	Capabilities access.Capabilities
 	Topology     *access.Topology
 	Failures     []string
@@ -144,6 +148,17 @@ func renderCluster(s Snapshot) string {
 	if summary := strings.TrimSpace(s.Summary); summary != "" {
 		b.WriteString(fmt.Sprintf("- 概要：%s\n", summary))
 	}
+
+	// 健康明细是调查的起点。把它直接给出，模型才能针对具体告警下钻，
+	// 而不是先跑一遍所有工具去猜问题在哪。
+	if detail := strings.TrimSpace(s.HealthDetail); detail != "" {
+		b.WriteString("\n### 健康告警明细（已采集，不要再调用 ceph_health 重复获取）\n\n")
+		b.WriteString("```\n")
+		b.WriteString(detail)
+		b.WriteString("\n```\n")
+		b.WriteString("\n**先针对上面这条告警形成假设并定向验证**，不要一上来就把所有诊断工具都跑一遍。\n")
+	}
+
 	b.WriteString("\n快照仅供参考，正式结论必须引用你自己调用工具后产生的证据 ID。")
 
 	return b.String()

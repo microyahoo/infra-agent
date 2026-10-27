@@ -21,30 +21,31 @@ const doctorExitFindings = 2
 
 // doctorOptions 是 doctor 命令的全部参数。
 type doctorOptions struct {
-	Host         string
-	Port         int
-	User         string
-	Key          string
-	Password     string
-	KnownHosts   string
-	CephSrc      string
-	Format       string
-	Question     string
-	Timeout      int
-	MaxRounds    int
-	MaxToolCalls int
-	MaxPerTool   int
-	Model        string
-	BaseURL      string
-	APIKeyEnv    string
-	SSHTimeout   int
-	ProbeTimeout int
-	MaxTokens    int
-	LLMTimeout   int
-	LLMRetries   int
-	DryRun       bool
-	SelfCheck    bool
-	Interactive  bool
+	Host             string
+	Port             int
+	User             string
+	Key              string
+	Password         string
+	KnownHosts       string
+	CephSrc          string
+	Format           string
+	Question         string
+	Timeout          int
+	MaxRounds        int
+	MaxToolCalls     int
+	MaxPerTool       int
+	MaxCallsPerRound int
+	Model            string
+	BaseURL          string
+	APIKeyEnv        string
+	SSHTimeout       int
+	ProbeTimeout     int
+	MaxTokens        int
+	LLMTimeout       int
+	LLMRetries       int
+	DryRun           bool
+	SelfCheck        bool
+	Interactive      bool
 }
 
 var doctorOpts doctorOptions
@@ -103,6 +104,7 @@ func init() {
 	f.IntVar(&doctorOpts.MaxRounds, "max-rounds", 20, "最大调查轮数")
 	f.IntVar(&doctorOpts.MaxToolCalls, "max-tool-calls", 60, "最大工具调用数")
 	f.IntVar(&doctorOpts.MaxPerTool, "max-per-tool", 5, "单个工具的最大调用次数")
+	f.IntVar(&doctorOpts.MaxCallsPerRound, "max-calls-per-round", 2, "单轮并行的工具调用上限")
 	f.StringVar(&doctorOpts.Model, "model", "", "模型名，默认读配置")
 	f.StringVar(&doctorOpts.BaseURL, "base-url", "", "OpenAI 兼容地址，默认读配置")
 	f.StringVar(&doctorOpts.APIKeyEnv, "api-key-env", "OPENAI_API_KEY", "提供 API Key 的环境变量名")
@@ -204,10 +206,11 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 			Timeout:     time.Duration(opt.LLMTimeout) * time.Second,
 			MaxRetries:  opt.LLMRetries,
 		}),
-		SourceDir:    opt.CephSrc,
-		MaxRounds:    opt.MaxRounds,
-		MaxToolCalls: opt.MaxToolCalls,
-		MaxPerTool:   opt.MaxPerTool,
+		SourceDir:        opt.CephSrc,
+		MaxRounds:        opt.MaxRounds,
+		MaxToolCalls:     opt.MaxToolCalls,
+		MaxPerTool:       opt.MaxPerTool,
+		MaxCallsPerRound: opt.MaxCallsPerRound,
 		OnProgress: func(msg string) {
 			fmt.Fprintf(os.Stderr, "  · %s\n", msg)
 		},

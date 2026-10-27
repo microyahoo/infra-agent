@@ -34,9 +34,10 @@ type resolvedDoctorOptions struct {
 	LLMTimeout  int
 	LLMRetries  int
 
-	MaxRounds    int
-	MaxToolCalls int
-	MaxPerTool   int
+	MaxRounds        int
+	MaxToolCalls     int
+	MaxPerTool       int
+	MaxCallsPerRound int
 
 	Timeout     int
 	Format      string
@@ -110,9 +111,10 @@ func resolveDoctorOptions(cmd *cobra.Command) resolvedDoctorOptions {
 		LLMTimeout:  flagInt("llm-timeout", "doctor.llm.timeout", 120),
 		LLMRetries:  flagInt("llm-retries", "doctor.llm.max_retries", -1),
 
-		MaxRounds:    flagInt("max-rounds", "doctor.loop.max_rounds", 20),
-		MaxToolCalls: flagInt("max-tool-calls", "doctor.loop.max_tool_calls", 60),
-		MaxPerTool:   flagInt("max-per-tool", "doctor.loop.max_per_tool", 5),
+		MaxRounds:        flagInt("max-rounds", "doctor.loop.max_rounds", 20),
+		MaxToolCalls:     flagInt("max-tool-calls", "doctor.loop.max_tool_calls", 60),
+		MaxPerTool:       flagInt("max-per-tool", "doctor.loop.max_per_tool", 5),
+		MaxCallsPerRound: flagInt("max-calls-per-round", "doctor.loop.max_calls_per_round", 2),
 
 		Timeout:     flagInt("timeout", "doctor.timeout", 600),
 		Format:      flagString("format", "doctor.report.format", "text"),

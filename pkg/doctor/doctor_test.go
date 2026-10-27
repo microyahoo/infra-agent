@@ -478,3 +478,39 @@ func (m *mutableHealthCluster) Run(ctx context.Context, node string, argv []stri
 	}
 	return m.fakeCluster.Run(ctx, node, argv)
 }
+
+// 健康明细必须出现在提示词里。否则模型只知道 HEALTH_WARN，
+// 不知道是"Slow OSD heartbeats longest 1349ms"，只能全量跑工具去碰。
+func TestPromptCarriesHealthDetail(t *testing.T) {
+	snap := Snapshot{
+		ClusterID:    "fsid-abc",
+		Health:       "HEALTH_WARN",
+		Summary:      "mon 3，OSD 120",
+		HealthDetail: "HEALTH_WARN Slow OSD heartbeats on front (longest 1349.426ms)\n    osd.13 is experiencing slow heartbeats",
+		Capabilities: newFakeCluster().caps,
+		Topology:     newFakeCluster().topo,
+	}
+	p := SystemPrompt(snap, "集群异常")
+
+	if !strings.Contains(p, "1349.426ms") {
+		t.Error("prompt must carry the measured value from health detail")
+	}
+	if !strings.Contains(p, "osd.13") {
+		t.Error("prompt must carry the affected OSD from health detail")
+	}
+	if !strings.Contains(p, "不要再调用 ceph_health") {
+		t.Error("prompt should tell the model the detail is already collected")
+	}
+}
+
+// 健康时不应出现明细区块。
+func TestPromptWithoutHealthDetail(t *testing.T) {
+	snap := Snapshot{
+		ClusterID: "fsid-abc", Health: "HEALTH_OK",
+		Capabilities: newFakeCluster().caps,
+	}
+	p := SystemPrompt(snap, "q")
+	if strings.Contains(p, "健康告警明细") {
+		t.Error("healthy cluster should not render the health detail block")
+	}
+}
