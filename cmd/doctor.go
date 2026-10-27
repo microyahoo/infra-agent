@@ -48,33 +48,24 @@ var doctorOpts doctorOptions
 // doctorCmd represents the doctor command
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "通过 SSH 自主诊断 Ceph 集群",
-	Long: `通过 SSH 只读访问 Ceph 集群，由 AI 自主调查并给出一份可溯源的诊断报告。
+	Short: "通过 SSH 调查 Ceph 集群（对话式）",
+	Long: `通过 SSH 只读访问 Ceph 集群，像和运维同事对话一样查问题。
 
-命令会先探测节点的能力（宿主机 ceph CLI、rook toolbox、容器 exec 或仅日志），
-发现集群拓扑并做一次只读快照，随后驱动模型按需调用诊断工具收集证据，
-最终产出一份包含证据链、已排除假设与处理建议的报告。
+交互模式（默认进入）下直接说你想查什么；助手会自己决定查什么、查多深，
+然后基于查到的东西回答。可以追问、可以质疑它上一轮的结论。
 
-需要提供 SSH 私钥（--key）或密码（--password）之一，并通过环境变量提供模型 API Key。
-
-退出码:
-  0  未发现 high/critical 级问题
-  1  运行错误（接入失败、模型调用失败等）
-  2  诊断完成且发现 critical/high 级问题（报告已打印到 stdout）
+全程只读：变更类命令会被拒绝。
 
 示例:
-  # 全面体检
-  infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa
+  # 交互式调查
+  infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa --interactive
 
-  # 指定问题与源码目录，便于结合源码定位
+  # 问一个问题、拿一个回答，然后退出
   infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa \
-    --question "为什么 PG 一直处于 active+undersized?" --ceph-src ~/ceph
+    --question "集群为什么 warn 了"
 
-  # 先验证 SSH 与探测结果，不消耗模型额度
+  # 只验证 SSH 与探测结果，不消耗模型额度
   infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa --dry-run
-
-  # 输出 JSON 供下游处理
-  infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa --format json
 `,
 	RunE: runDoctor,
 	// 运行期错误（接入失败、模型失败）只需打印错误本身；
@@ -94,10 +85,10 @@ func init() {
 	f.StringVar(&doctorOpts.KnownHosts, "known-hosts", "", "known_hosts 路径，留空不校验")
 	f.StringVar(&doctorOpts.CephSrc, "ceph-src", "", "本地 Ceph 源码目录")
 
-	f.StringVar(&doctorOpts.Question, "question", "", "自定义诊断问题，留空做全面体检")
+	f.StringVar(&doctorOpts.Question, "question", "", "单次提问的内容（配合 --interactive=false）")
 	f.IntVar(&doctorOpts.Timeout, "timeout", 600, "总超时（秒）")
-	f.IntVar(&doctorOpts.MaxRounds, "max-rounds", 20, "最大调查轮数")
-	f.IntVar(&doctorOpts.MaxToolCalls, "max-tool-calls", 60, "最大工具调用数")
+	f.IntVar(&doctorOpts.MaxRounds, "max-rounds", 12, "单次提问内最多的模型往返轮数")
+	f.IntVar(&doctorOpts.MaxToolCalls, "max-tool-calls", 20, "单次提问内最多的工具调用数")
 	f.IntVar(&doctorOpts.MaxPerTool, "max-per-tool", 5, "单个工具的最大调用次数")
 	f.IntVar(&doctorOpts.MaxCallsPerRound, "max-calls-per-round", 2, "单轮并行的工具调用上限")
 	f.StringVar(&doctorOpts.Model, "model", "", "模型名，默认读配置")
@@ -106,7 +97,7 @@ func init() {
 	f.IntVar(&doctorOpts.SSHTimeout, "ssh-timeout", 30, "单条命令超时（秒）")
 	f.BoolVar(&doctorOpts.DryRun, "dry-run", false, "仅连接并探测能力与拓扑，不调用模型")
 	f.BoolVar(&doctorOpts.SelfCheck, "self-check", false, "在真实集群上逐个运行诊断工具（不调用模型），用于验证解析是否正确")
-	f.BoolVar(&doctorOpts.Interactive, "interactive", false, "诊断结束后进入交互模式，可以继续追问")
+	f.BoolVar(&doctorOpts.Interactive, "interactive", true, "进入交互模式（用 --interactive=false 改为单次提问）")
 	f.IntVar(&doctorOpts.LLMRetries, "llm-retries", -1, "模型请求失败时的重试次数（-1 表示用默认值 2）")
 	f.IntVar(&doctorOpts.MaxTokens, "max-tokens", 8192, "单次模型回复的最大 token 数（0 表示交给服务端默认值）")
 	f.IntVar(&doctorOpts.LLMTimeout, "llm-timeout", 120, "单次模型请求超时（秒）")
