@@ -69,6 +69,29 @@ func AgentPrompt(s Snapshot) string {
 		b.WriteString("\n```\n")
 	}
 
+	// 把结论涉及到的 OSD 直接映射到节点与磁盘。
+	// 这一步本该由框架做：拓扑已经在手里，让模型逐个 osd_detail 纯属浪费往返。
+	if s.Topology != nil {
+		ids := referencedOSDs(s, 24)
+		if len(ids) > 0 {
+			place := map[int]access.OSDPlacement{}
+			for _, p := range s.Topology.OSDs {
+				place[p.ID] = p
+			}
+			b.WriteString("\n## 相关 OSD 的节点与磁盘（已从拓扑查出，不必再调 osd_detail）\n\n")
+			b.WriteString("| OSD | 节点 | 磁盘 | 状态 |\n|---|---|---|---|\n")
+			for _, id := range ids {
+				if p, ok := place[id]; ok {
+					b.WriteString(fmt.Sprintf("| osd.%d | %s | %s | %s |\n",
+						id, orDash(p.Host), orDash(p.Device), orDash(p.Status)))
+				} else {
+					b.WriteString(fmt.Sprintf("| osd.%d | 未在拓扑中找到 | - | - |\n", id))
+				}
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	// 列出已采集的数据与对应证据 ID。不写清楚，模型会为了拿 ID 再查一遍。
 	if len(s.Evidence) > 0 {
 		b.WriteString("\n## 会话开始时已采集（已有证据 ID，可直接引用，不要重复执行）\n\n")

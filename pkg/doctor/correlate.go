@@ -185,3 +185,39 @@ func prefixOSD(ids []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+var reOSDRef = regexp.MustCompile(`osd\.(\d+)`)
+
+// referencedOSDs 收集告警与结论里提到的 OSD 编号。
+// 用于把"这些 OSD 在哪台机器、哪块盘"直接查出来写进提示词，
+// 省掉模型逐个 osd_detail 的往返。
+func referencedOSDs(s Snapshot, limit int) []int {
+	seen := map[int]bool{}
+	var out []int
+	add := func(idStr string) {
+		id := 0
+		for _, r := range idStr {
+			if r < '0' || r > '9' {
+				return
+			}
+			id = id*10 + int(r-'0')
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	for _, m := range reOSDRef.FindAllStringSubmatch(s.HealthDetail, -1) {
+		add(m[1])
+	}
+	for _, f := range s.Findings {
+		for _, m := range reOSDRef.FindAllStringSubmatch(f.Summary+" "+f.Next, -1) {
+			add(m[1])
+		}
+	}
+	sort.Ints(out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
