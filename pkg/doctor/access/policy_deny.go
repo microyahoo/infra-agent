@@ -54,7 +54,12 @@ func DefaultDenyPolicy() *Policy {
 		},
 		mutatingPatterns: []string{
 			// ceph 侧变更
-			"osd out", "osd in", "osd rm", "osd crush", "osd pool create",
+			"osd out", "osd in", "osd rm",
+			// crush 只拒绝变更子命令；rule dump / tree / class ls 都是只读，
+			// 误拦它们会让模型无法核对 CRUSH 拓扑与失败域。
+			"osd crush add", "osd crush remove", "osd crush move",
+			"osd crush create-bucket", "osd crush reweight", "osd crush set",
+			"osd pool create",
 			"osd pool delete", "osd pool set", "osd set", "osd unset",
 			"config set", "config rm", "injectargs", "pg repair", "pg scrub",
 			"pg deep-scrub", "pool create", "pool delete", "pool set",

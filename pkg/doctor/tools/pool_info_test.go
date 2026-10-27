@@ -102,3 +102,43 @@ func TestPoolInfoCrossChecksPGNum(t *testing.T) {
 		}
 	}
 }
+
+// ceph df detail -f json 不含 pg_num/size。必须从 osd pool ls detail 补齐，
+// 否则报告会显示 pg_num=0、size=0，模型会误判"池配置损坏"。
+func TestPoolInfoGetsSpecFromPoolLsDetail(t *testing.T) {
+	tr := newFakeRunner()
+	tr.on("node-3", []string{"ceph", "df", "detail", "-f", "json"},
+		`{"pools":[{"name":"rbd","stats":{"bytes_used":100,"max_avail":900,"percent_used":0.1}}]}`)
+	tr.on("node-3", []string{"ceph", "osd", "pool", "ls", "detail"},
+		"pool 1 'device_health_metrics' replicated size 3 min_size 2 crush_rule 1 object_hash rjenkins pg_num 1 pgp_num 1 autoscale_mode off\n"+
+			"pool 2 'rbd' replicated size 3 min_size 2 crush_rule 0 object_hash rjenkins pg_num 512 pgp_num 512 autoscale_mode off\n")
+	tr.on("node-3", []string{"ceph", "osd", "pool", "autoscale-status", "-f", "json"}, `{"pools":[]}`)
+
+	res, _, err := NewPoolInfo(tr).Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := res.Data.(*PoolInfoData)
+	if len(d.Pools) != 1 {
+		t.Fatalf("pools = %d", len(d.Pools))
+	}
+	p := d.Pools[0]
+	if p.PGNum != 512 {
+		t.Errorf("PGNum = %d, want 512 (from pool ls detail)", p.PGNum)
+	}
+	if p.Size != 3 || p.MinSize != 2 {
+		t.Errorf("Size/MinSize = %d/%d, want 3/2", p.Size, p.MinSize)
+	}
+}
+
+func TestParsePoolLsDetail(t *testing.T) {
+	out := "pool 3 'ec.pool' erasure size 6 min_size 4 crush_rule 2 object_hash rjenkins pg_num 64 pgp_num 64\n"
+	specs := parsePoolLsDetail(out)
+	sp, ok := specs["ec.pool"]
+	if !ok {
+		t.Fatalf("ec.pool not parsed: %+v", specs)
+	}
+	if sp.pgNum != 64 || sp.size != 6 || sp.minSize != 4 {
+		t.Errorf("spec = %+v", sp)
+	}
+}

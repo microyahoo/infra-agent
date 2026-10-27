@@ -48,10 +48,48 @@ type rawPoolDF struct {
 			MaxAvail    uint64  `json:"max_avail"`
 			PercentUsed float64 `json:"percent_used"`
 		} `json:"stats"`
-		PGNum   int `json:"pg_num"`
-		Size    int `json:"size"`
-		MinSize int `json:"min_size"`
 	} `json:"pools"`
+}
+
+// poolSpec 是从 ceph osd pool ls detail 抽出的池规格。
+//
+// 为什么必须单独查：ceph df detail -f json 的 pool 对象只有 name + stats，
+// 不含 pg_num / size / min_size。之前代码从 df 里读这些字段，
+// 结果全部为 0，模型据此误判"池配置损坏"。
+type poolSpec struct {
+	pgNum   int
+	size    int
+	minSize int
+}
+
+// parsePoolLsDetail 解析 ceph osd pool ls detail 的文本输出。
+//
+// 形态：
+//
+//	pool 2 'rgw.buckets.index' replicated size 3 min_size 2 ... pg_num 512 pgp_num 512 ...
+//	pool 3 'ec.pool' erasure size 6 min_size 4 ... pg_num 64 ...
+func parsePoolLsDetail(out string) map[string]poolSpec {
+	specs := map[string]poolSpec{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "pool" {
+			continue
+		}
+		name := strings.Trim(fields[2], "'")
+		sp := poolSpec{}
+		for i := 0; i+1 < len(fields); i++ {
+			switch fields[i] {
+			case "size":
+				fmt.Sscanf(fields[i+1], "%d", &sp.size)
+			case "min_size":
+				fmt.Sscanf(fields[i+1], "%d", &sp.minSize)
+			case "pg_num":
+				fmt.Sscanf(fields[i+1], "%d", &sp.pgNum)
+			}
+		}
+		specs[name] = sp
+	}
+	return specs
 }
 
 type rawAutoscale struct {
@@ -86,6 +124,13 @@ func (t *poolInfoTool) Execute(ctx context.Context, _ json.RawMessage) (*Result,
 		return nil, nil, fmt.Errorf("解析 ceph df detail 失败: %w", jerr)
 	}
 
+	// 池规格（pg_num / size / min_size）只能从 pool ls detail 拿到。
+	specs := map[string]poolSpec{}
+	lsArgv := []string{"ceph", "osd", "pool", "ls", "detail"}
+	if lout, lerr := t.r.Run(ctx, node, lsArgv); lerr == nil {
+		specs = parsePoolLsDetail(lout.Stdout)
+	}
+
 	// autoscale-status 是补充信息：失败或解析失败时退化为只有容量数据。
 	autoMap := map[string]autoscaleEntry{}
 	if aout, aerr := t.r.Run(ctx, node, []string{"ceph", "osd", "pool", "autoscale-status", "-f", "json"}); aerr == nil {
@@ -101,7 +146,10 @@ func (t *poolInfoTool) Execute(ctx context.Context, _ json.RawMessage) (*Result,
 	for _, p := range df.Pools {
 		pi := PoolInfo{
 			Name: p.Name, BytesUsed: p.Stats.BytesUsed, MaxAvail: p.Stats.MaxAvail,
-			UsedPercent: p.Stats.PercentUsed, PGNum: p.PGNum, Size: p.Size, MinSize: p.MinSize,
+			UsedPercent: p.Stats.PercentUsed,
+		}
+		if sp, ok := specs[p.Name]; ok {
+			pi.PGNum, pi.Size, pi.MinSize = sp.pgNum, sp.size, sp.minSize
 		}
 		if a, ok := autoMap[p.Name]; ok {
 			pi.PGNumTarget, pi.AutoscaleMode = a.target, a.mode

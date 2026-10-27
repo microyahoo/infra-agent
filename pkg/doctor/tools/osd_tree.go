@@ -67,18 +67,13 @@ type rawOSDDFNode struct {
 
 // utilization 返回该 OSD 的使用率（百分比 0-100）。
 //
-// Ceph 的 ceph osd df -f json 给的 utilization 是 0-1 的小数（如 0.0052
-// 表示 0.52%），不是百分比。这里统一换算成 0-100，否则热点阈值
-// （>85%）永远不可能命中，且摘要会显示成 0.0%。
+// 重要：Ceph 的 ceph osd df -f json 里 utilization 字段**已经是百分比**。
+// 实测 Pacific 16.2：utilization=0.00531，而 kb_used/kb*100=0.005315%——
+// 两者完全一致，说明字段值就是百分数。曾经错误地按"0-1 小数"再乘 100，
+// 把 0.005% 显示成 0.5%，进而让模型以为容量紧张。
 func (n rawOSDDFNode) utilization() float64 {
-	if n.Utilization > 0 {
-		if n.Utilization <= 1 {
-			return n.Utilization * 100
-		}
+	if n.Utilization > 0 || n.KBUsed > 0 {
 		return n.Utilization
-	}
-	if n.KB > 0 {
-		return n.KBUsed / n.KB * 100
 	}
 	return 0
 }

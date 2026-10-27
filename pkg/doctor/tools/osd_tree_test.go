@@ -96,46 +96,41 @@ func TestOSDTreeMapsDeviceFromTopology(t *testing.T) {
 	}
 }
 
-// 某些 Ceph 版本的 ceph osd df 不直接给 utilization，只给 kb / kb_used。
-// 这种形态下必须能算出使用率，否则热点检测会静默失效。
-func TestOSDTreeComputesUtilizationFromKB(t *testing.T) {
+// Ceph 的 utilization 字段本身就是百分比。
+// 实测 Pacific：utilization=0.00531 与 kb_used/kb*100=0.005315 完全一致。
+// 曾经按"0-1 小数"再乘 100，把 0.005% 放大成 0.5%，会让模型误判容量紧张。
+func TestOSDTreeUtilizationIsAlreadyPercent(t *testing.T) {
 	tr := newFakeRunner()
 	tr.on("node-3", []string{"ceph", "osd", "df", "-f", "json"}, `{"nodes":[
-      {"id":7,"name":"osd.7","type":"osd","status":"up","kb":1000,"kb_used":950},
-      {"id":8,"name":"osd.8","type":"osd","status":"up","kb":1000,"kb_used":400}]}`)
+      {"id":9,"name":"osd.9","type":"osd","status":"up","kb":19531825152,"kb_used":1038080,"utilization":0.0053148},
+      {"id":92,"name":"osd.92","type":"osd","status":"up","kb":19531825152,"kb_used":9600000,"utilization":0.0492}]}`)
 
 	res, _, err := NewOSDTree(tr).Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := res.Data.(*OSDTreeData)
-	if d.OSDs[0].Utilization != 95 {
-		t.Errorf("osd.7 utilization = %v, want 95", d.OSDs[0].Utilization)
+	if d.OSDs[0].Utilization != 0.0053148 {
+		t.Errorf("utilization must be used as-is (percent), got %v want 0.0053148", d.OSDs[0].Utilization)
 	}
-	if len(d.Hotspots) != 1 || d.Hotspots[0].ID != 7 {
-		t.Errorf("expected osd.7 hotspot, got %+v", d.Hotspots)
+	// 0.0492% 远低于热点阈值，不该被标成热点
+	if len(d.Hotspots) != 0 {
+		t.Errorf("nothing near full, hotspots = %+v", d.Hotspots)
 	}
 }
 
-// Ceph 的 utilization 字段是 0-1 小数。若不换算，热点阈值永远不触发，
-// 摘要也会显示成 0.0%——这是不会报错的静默错误。
-func TestOSDTreeScalesFractionalUtilization(t *testing.T) {
+// 真正接近写满时必须能识别。
+func TestOSDTreeDetectsGenuinelyFullOSD(t *testing.T) {
 	tr := newFakeRunner()
 	tr.on("node-3", []string{"ceph", "osd", "df", "-f", "json"}, `{"nodes":[
-      {"id":9,"name":"osd.9","type":"osd","status":"up","kb":19531825152,"kb_used":18000000000,"utilization":0.92},
-      {"id":19,"name":"osd.19","type":"osd","status":"up","kb":19531825152,"kb_used":1030184,"utilization":0.0052}]}`)
+      {"id":9,"name":"osd.9","type":"osd","status":"up","kb":1000,"kb_used":900,"utilization":90},
+      {"id":92,"name":"osd.92","type":"osd","status":"up","kb":1000,"kb_used":400,"utilization":40}]}`)
 
 	res, _, err := NewOSDTree(tr).Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := res.Data.(*OSDTreeData)
-	if d.OSDs[0].Utilization != 92 {
-		t.Errorf("osd.9 utilization = %v, want 92", d.OSDs[0].Utilization)
-	}
-	if d.OSDs[1].Utilization < 0.5 || d.OSDs[1].Utilization > 0.6 {
-		t.Errorf("osd.19 utilization = %v, want ~0.52", d.OSDs[1].Utilization)
-	}
 	if len(d.Hotspots) != 1 || d.Hotspots[0].ID != 9 {
 		t.Errorf("expected osd.9 hotspot, got %+v", d.Hotspots)
 	}
