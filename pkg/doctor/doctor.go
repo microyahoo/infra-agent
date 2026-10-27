@@ -87,14 +87,15 @@ const (
 
 // snapshotResult 是一次快照的结果，同时携带要写入证据链的材料。
 type snapshotResult struct {
-	ClusterID    string
-	Health       string
-	Summary      string
-	HealthDetail string
-	Capabilities access.Capabilities
-	Topology     *access.Topology
-	Failures     []string
-	Evidence     []loop.Evidence
+	ClusterID          string
+	Health             string
+	Summary            string
+	HealthDetail       string
+	RecentHealthEvents string
+	Capabilities       access.Capabilities
+	Topology           *access.Topology
+	Failures           []string
+	Evidence           []loop.Evidence
 }
 
 // degraded 判断快照是否表明能力降级。
@@ -106,13 +107,14 @@ func (s snapshotResult) degraded() bool {
 // toSnapshot 把快照结果转换为提示词使用的 Snapshot。
 func (s snapshotResult) toSnapshot() Snapshot {
 	return Snapshot{
-		ClusterID:    s.ClusterID,
-		Health:       s.Health,
-		Summary:      s.Summary,
-		HealthDetail: s.HealthDetail,
-		Capabilities: s.Capabilities,
-		Topology:     s.Topology,
-		Failures:     append([]string{}, s.Failures...),
+		ClusterID:          s.ClusterID,
+		Health:             s.Health,
+		Summary:            s.Summary,
+		HealthDetail:       s.HealthDetail,
+		RecentHealthEvents: s.RecentHealthEvents,
+		Capabilities:       s.Capabilities,
+		Topology:           s.Topology,
+		Failures:           append([]string{}, s.Failures...),
 	}
 }
 
@@ -307,8 +309,13 @@ func (d *Doctor) snapshotStatus(ctx context.Context, node string, s *snapshotRes
 
 	evidence := []loop.Evidence{ev}
 
-	// 非健康状态下顺带取一次健康检查明细，帮助模型确定下钻方向。
-	if st.health != "" && st.health != "HEALTH_OK" {
+	// 取一次健康检查明细，帮助模型确定下钻方向。
+	//
+	// 不只在非健康时才取：慢心跳、短时 slow ops 这类告警是间歇性的，
+	// 采样瞬间很可能已经恢复成 HEALTH_OK。此时若不取，提示词里就没有任何症状，
+	// 模型会误以为集群无异常，然后漫无目的地全量查询。
+	// 这条命令本身很便宜（一次只读查询），始终执行。
+	if st.health != "" {
 		hstart := time.Now()
 		hout, herr := d.cfg.Cluster.Run(ctx, node, healthDetailArgv)
 		hdur := time.Since(hstart)
@@ -336,7 +343,55 @@ func (d *Doctor) snapshotStatus(ctx context.Context, node string, s *snapshotRes
 		evidence = append(evidence, hev)
 	}
 
+	// 当前健康时，补一次最近的 health 变更历史。
+	// 用户报告异常但采样是 OK，说明告警刚刚发生过——历史里通常还查得到。
+	if st.health == "HEALTH_OK" {
+		if hist := d.recentHealthHistory(ctx, node); hist != "" {
+			s.RecentHealthEvents = hist
+			evidence = append(evidence, loop.Evidence{
+				Round:     initialEvidenceRound,
+				Tool:      "snapshot:health_history",
+				Node:      node,
+				Command:   access.BuildCommand(recentHealthArgv),
+				RawOutput: hist,
+				Summary:   truncateLines(hist, 3),
+				StartedAt: time.Now(),
+			})
+		}
+	}
+
 	return evidence
+}
+
+// recentHealthArgv 取最近的集群日志，从中筛出 health 变更。
+var recentHealthArgv = []string{"ceph", "log", "last", "500"}
+
+// recentHealthHistory 从最近的集群日志里筛出健康状态变更行。
+//
+// 用途：用户说"刚才 warn 了"，但此刻采样是 HEALTH_OK。
+// 慢心跳这类告警持续几十秒就恢复，必须从历史里找证据。
+func (d *Doctor) recentHealthHistory(ctx context.Context, node string) string {
+	out, err := d.cfg.Cluster.Run(ctx, node, recentHealthArgv)
+	if err != nil {
+		return ""
+	}
+	var lines []string
+	for _, line := range strings.Split(out.Stdout, "\n") {
+		low := strings.ToLower(line)
+		if strings.Contains(low, "health") || strings.Contains(low, "slow heartbeat") ||
+			strings.Contains(low, "osd_slow") || strings.Contains(low, "slow ops") {
+			lines = append(lines, strings.TrimSpace(line))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	// 只保留最近的若干条，避免挤占上下文。
+	const maxLines = 10
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // maxHealthDetailLines 限制健康明细进入提示词的行数。

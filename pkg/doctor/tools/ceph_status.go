@@ -10,19 +10,20 @@ import (
 
 // CephStatusData 是 ceph_status 的结构化结果。
 type CephStatusData struct {
-	FSID         string    `json:"fsid"`
-	Health       string    `json:"health"`
-	HealthChecks []string  `json:"health_checks,omitempty"`
-	NumMons      int       `json:"num_mons"`
-	NumOSDs      int       `json:"num_osds"`
-	NumOSDsUp    int       `json:"num_osds_up"`
-	NumOSDsIn    int       `json:"num_osds_in"`
-	NumPGs       int       `json:"num_pgs"`
-	DegradedPGs  int       `json:"degraded_pgs"`
-	PGState      []PGState `json:"pg_state"`
-	BytesTotal   uint64    `json:"bytes_total"`
-	BytesUsed    uint64    `json:"bytes_used"`
-	UsedPercent  float64   `json:"used_percent"`
+	FSID           string    `json:"fsid"`
+	Health         string    `json:"health"`
+	HealthChecks   []string  `json:"health_checks,omitempty"`
+	HealthMessages []string  `json:"health_messages,omitempty"`
+	NumMons        int       `json:"num_mons"`
+	NumOSDs        int       `json:"num_osds"`
+	NumOSDsUp      int       `json:"num_osds_up"`
+	NumOSDsIn      int       `json:"num_osds_in"`
+	NumPGs         int       `json:"num_pgs"`
+	DegradedPGs    int       `json:"degraded_pgs"`
+	PGState        []PGState `json:"pg_state"`
+	BytesTotal     uint64    `json:"bytes_total"`
+	BytesUsed      uint64    `json:"bytes_used"`
+	UsedPercent    float64   `json:"used_percent"`
 }
 
 // PGState 是单个 PG 状态及其数量。
@@ -101,10 +102,22 @@ func (t *cephStatusTool) Execute(ctx context.Context, _ json.RawMessage) (*Resul
 		BytesUsed:  st.PGMap.BytesUsed,
 	}
 	// checks 是 map，遍历顺序不确定，排序后保证摘要稳定可复现。
-	for name := range st.Health.Checks {
+	//
+	// 除了代码名，还要取出 summary.message：只给 HEALTH_WARN + 代码名，
+	// 模型仍然不知道"慢在哪、多慢"，只能全量排查。
+	for name, raw := range st.Health.Checks {
 		d.HealthChecks = append(d.HealthChecks, name)
+		var c struct {
+			Summary struct {
+				Message string `json:"message"`
+			} `json:"summary"`
+		}
+		if json.Unmarshal(raw, &c) == nil && c.Summary.Message != "" {
+			d.HealthMessages = append(d.HealthMessages, c.Summary.Message)
+		}
 	}
 	sort.Strings(d.HealthChecks)
+	sort.Strings(d.HealthMessages)
 	for _, s := range st.PGMap.PGsByState {
 		d.PGState = append(d.PGState, PGState{State: s.StateName, Count: s.Count})
 		if s.StateName != "active+clean" {
@@ -123,7 +136,13 @@ func (t *cephStatusTool) Execute(ctx context.Context, _ json.RawMessage) (*Resul
 		Data: d,
 	}
 	if d.Health != "HEALTH_OK" {
-		res.Hints = append(res.Hints, fmt.Sprintf("集群非健康（%s），可调用 pg_detail 查看卡住的 PG", strings.Join(d.HealthChecks, ",")))
+		// 把告警原文放进摘要，模型才知道该往哪个方向查。
+		if len(d.HealthMessages) > 0 {
+			res.Summary += "；告警：" + strings.Join(d.HealthMessages, "；")
+			res.Hints = append(res.Hints, "根据上面的告警原文定向排查；如果告警提到具体 OSD/节点，先 osd_detail 再 host_check/host_io")
+		} else {
+			res.Hints = append(res.Hints, fmt.Sprintf("集群非健康（%s），可调用 ceph_health 查看完整告警明细", strings.Join(d.HealthChecks, ",")))
+		}
 	}
 	if d.NumOSDsUp < d.NumOSDs {
 		res.Hints = append(res.Hints, fmt.Sprintf("有 %d 个 OSD down，可调用 osd_tree 定位，再用 osd_detail 查看具体 OSD", d.NumOSDs-d.NumOSDsUp))

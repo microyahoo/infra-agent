@@ -21,16 +21,23 @@ type Snapshot struct {
 	// 必须进提示词：模型只有知道"到底哪条告警、数值多大"，
 	// 才能直接朝那个方向查，而不是把所有工具跑一遍去碰。
 	HealthDetail string
-	Capabilities access.Capabilities
-	Topology     *access.Topology
-	Failures     []string
+	// RecentHealthEvents 是最近日志中的健康变更记录。
+	// 当前采样为 HEALTH_OK 但用户报告异常时，这是唯一的症状来源。
+	RecentHealthEvents string
+	Capabilities       access.Capabilities
+	Topology           *access.Topology
+	Failures           []string
 }
 
 // SystemPrompt 根据集群快照与用户问题拼装系统提示词。
 func SystemPrompt(s Snapshot, question string) string {
 	var b strings.Builder
 
+	// 顺序很重要：弱模型只认真读前面几百个 token。
+	// 用户问题与症状放最前，规则与背景在后。
 	b.WriteString(promptRole)
+	b.WriteString("\n\n")
+	b.WriteString(renderMission(s, question))
 	b.WriteString("\n\n")
 	b.WriteString(promptRules)
 	b.WriteString("\n\n")
@@ -128,6 +135,88 @@ const promptRules = `## 调查协议（必须按此执行）
 6. **不要重复调用**：相同工具、相同参数已调用过时结果不会变化。
 7. **不要用"未发现异常"掩盖"没能观测"**：某个工具调用失败时，
    它是"没有数据"，不是"没有问题"。必须在结论里区分这两种情况。`
+
+// renderMission 把「这次要解决什么」放在提示词最前面。
+//
+// 弱模型对中后段的指令遵循很差：健康明细如果排在第 4000 个字符之后，
+// 基本等于没给。这里把用户问题与已知告警提到最前，让第一轮就有明确靶子。
+func renderMission(s Snapshot, question string) string {
+	var b strings.Builder
+	b.WriteString("## 本次任务\n\n")
+
+	q := strings.TrimSpace(question)
+	if q == "" {
+		q = defaultQuestion
+	}
+	b.WriteString(q)
+	b.WriteString("\n\n")
+
+	health := strings.TrimSpace(s.Health)
+	detail := strings.TrimSpace(s.HealthDetail)
+
+	switch {
+	case detail != "":
+		b.WriteString("## 已知症状（快照已采集，直接据此定向排查）\n\n```\n")
+		b.WriteString(detail)
+		b.WriteString("\n```\n\n")
+		b.WriteString("**第一个动作就应该验证上面这条告警**：确认它涉及哪些 OSD/节点，" +
+			"再查这些对象的相关指标。不要先把 ceph_status / osd_tree / pool_info 之类全跑一遍。\n")
+
+	case health == "HEALTH_OK" && strings.TrimSpace(s.RecentHealthEvents) != "":
+		b.WriteString("## 已知症状（来自最近的集群日志）\n\n")
+		b.WriteString("快照时刻健康码为 HEALTH_OK，但最近日志里出现了健康变更——说明告警是**间歇性**的，刚刚发生过：\n\n```\n")
+		b.WriteString(s.RecentHealthEvents)
+		b.WriteString("\n```\n\n")
+		b.WriteString("**从这些历史记录里的 OSD 编号/节点名出发**：先 osd_detail 确认位置，" +
+			"再 host_check / host_io 看该节点的负载与磁盘。不要忽略它们转而做全面体检。\n")
+
+	case health == "HEALTH_OK":
+		// 关键场景：用户说有问题，但快照这一刻是 OK。
+		// 慢心跳、短时抖动这类告警是间歇性的，采样瞬间抓不到。
+		// 不点破这一点，模型会认为"集群没事"然后漫无目的地全量查询。
+		b.WriteString("## 已知症状\n\n")
+		b.WriteString("快照时刻健康码为 **HEALTH_OK**。\n\n")
+		if mentionsSymptom(q) {
+			b.WriteString("但用户报告了异常。这类告警（如 Slow OSD heartbeats、短时 slow ops）通常是**间歇性**的，" +
+				"采样瞬间可能已经恢复。\n\n")
+			b.WriteString("**不要因为当前是 OK 就判断一切正常。** 先查历史：\n")
+			b.WriteString("- `run_command([\"ceph\",\"log\",\"last\",\"300\"])` 找最近的 health 变更与告警记录\n")
+			b.WriteString("- `daemon_log` 看相关 OSD/mon 最近日志中的慢心跳/慢请求\n")
+			b.WriteString("- 告警里常带 OSD 编号或节点名，据此 `osd_detail` → `host_check`/`host_io` 定向下钻\n")
+		}
+
+	default:
+		b.WriteString("## 已知症状\n\n")
+		b.WriteString(fmt.Sprintf("快照时刻健康码为 `%s`，但未取到健康明细。\n\n", orUnknown(health)))
+		if mentionsSymptom(q) {
+			b.WriteString("先调用 `ceph_health` 拿到具体告警项，再定向排查。\n")
+		}
+	}
+	return b.String()
+}
+
+// mentionsSymptom 判断用户问题里是否描述了异常。
+// 只用于决定提示词里要不要强调"间歇性告警"这类引导。
+func mentionsSymptom(q string) bool {
+	lower := strings.ToLower(q)
+	for _, kw := range []string{
+		"warn", "error", "err", "异常", "问题", "故障", "慢", "卡", "告警", "失败",
+		"down", "slow", "degraded", "不健康", "检查", "排查", "怎么回事", "为啥",
+	} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// orUnknown 返回占位值。
+func orUnknown(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "unknown"
+	}
+	return s
+}
 
 // renderCluster 输出集群基础信息块。
 func renderCluster(s Snapshot) string {

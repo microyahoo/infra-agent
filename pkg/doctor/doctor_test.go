@@ -514,3 +514,78 @@ func TestPromptWithoutHealthDetail(t *testing.T) {
 		t.Error("healthy cluster should not render the health detail block")
 	}
 }
+
+// 用户说有异常、但快照采样是 HEALTH_OK（间歇性告警）时，
+// 提示词必须给出"这是间歇性的 + 从历史日志找证据"的明确指引，
+// 否则模型会以为集群没事，然后漫无目的地全量查询。
+func TestPromptHandlesTransientWarning(t *testing.T) {
+	snap := Snapshot{
+		ClusterID: "fsid-abc",
+		Health:    "HEALTH_OK",
+		RecentHealthEvents: "2026-10-27 05:20:11 osd.13 is experiencing slow heartbeats\n" +
+			"2026-10-27 05:20:30 Health check OSD_SLOW_HEARTBEAT cleared",
+		Capabilities: newFakeCluster().caps,
+	}
+	p := SystemPrompt(snap, "帮忙检查一下集群为啥 warn 了")
+
+	if !strings.Contains(p, "间歇性") {
+		t.Error("prompt should explain that the warning is transient")
+	}
+	if !strings.Contains(p, "osd.13") {
+		t.Error("prompt should surface the OSD from history")
+	}
+	if !strings.Contains(p, "不要忽略它们转而做全面体检") {
+		t.Error("prompt should steer away from a blanket sweep")
+	}
+}
+
+// 健康明细必须出现在提示词靠前的位置，而不是被规则和拓扑挤到后面。
+func TestPromptPutsSymptomEarly(t *testing.T) {
+	snap := Snapshot{
+		ClusterID:    "x",
+		Health:       "HEALTH_WARN",
+		HealthDetail: "HEALTH_WARN Slow OSD heartbeats on front (longest 1349.426ms)",
+		Capabilities: newFakeCluster().caps,
+		Topology:     newFakeCluster().topo,
+	}
+	p := SystemPrompt(snap, "为啥 warn 了")
+
+	iSymptom := strings.Index(p, "1349.426ms")
+	iRules := strings.Index(p, "## 硬性规则")
+	if iSymptom < 0 {
+		t.Fatal("symptom missing")
+	}
+	if iRules >= 0 && iSymptom > iRules {
+		t.Errorf("symptom at %d should come before the rules at %d", iSymptom, iRules)
+	}
+}
+
+// 健康明细即使集群当前 OK 也要采集：慢心跳是间歇性的，
+// 只在非健康时采集会错过刚恢复的告警。
+func TestSnapshotAlwaysFetchesHealthDetail(t *testing.T) {
+	fc := newFakeCluster()
+	calls := 0
+	counting := &countingHealthCluster{fakeCluster: fc, calls: &calls}
+
+	d := New(Config{Cluster: counting, Model: &fakeModel{
+		reply: llm.Reply{ToolCalls: []llm.ToolCall{{ID: "c", Name: loop.ConcludeToolName, Args: conclusionArgs("none")}}},
+	}})
+	if _, err := d.Run(context.Background(), Task{Question: "q"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls == 0 {
+		t.Error("health detail must be fetched even when the snapshot is HEALTH_OK")
+	}
+}
+
+type countingHealthCluster struct {
+	*fakeCluster
+	calls *int
+}
+
+func (c *countingHealthCluster) Run(ctx context.Context, node string, argv []string) (access.Output, error) {
+	if strings.Join(argv, " ") == "ceph health detail" {
+		*c.calls++
+	}
+	return c.fakeCluster.Run(ctx, node, argv)
+}

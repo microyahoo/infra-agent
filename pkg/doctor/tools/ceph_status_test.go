@@ -120,3 +120,24 @@ func TestFormatPercentAvoidsMisleadingZero(t *testing.T) {
 		}
 	}
 }
+
+// 摘要必须带出告警原文，否则模型只知道 HEALTH_WARN 一个词。
+func TestCephStatusSummaryCarriesHealthMessages(t *testing.T) {
+	tr := newFakeRunner()
+	tr.on("node-3", []string{"ceph", "status", "-f", "json"}, `{
+      "fsid":"x","health":{"status":"HEALTH_WARN","checks":{
+        "OSD_SLOW_HEARTBEAT":{"severity":"HEALTH_WARN",
+          "summary":{"message":"Slow OSD heartbeats on front (longest 1349.426ms)"}}}},
+      "monmap":{"num_mons":3},
+      "osdmap":{"num_osds":120,"num_up_osds":120,"num_in_osds":120},
+      "pgmap":{"num_pgs":3009,"pgs_by_state":[{"state_name":"active+clean","count":3009}],
+               "bytes_total":100,"bytes_used":1}}`)
+
+	res, _, err := NewCephStatus(tr).Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Summary, "1349.426ms") {
+		t.Errorf("summary must carry the measured value: %q", res.Summary)
+	}
+}
