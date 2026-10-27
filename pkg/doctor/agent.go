@@ -114,12 +114,14 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 
 	for rounds < a.maxRounds {
 		rounds++
-		a.event(fmt.Sprintf("第 %d 轮", rounds))
+		a.event(fmt.Sprintf("第 %d 轮：等待模型返回 …", rounds))
 
 		reply, err := a.model.Chat(ctx, a.msgs, specs)
 		if err != nil {
 			return "", fmt.Errorf("调用模型失败: %w", err)
 		}
+
+		a.event(fmt.Sprintf("第 %d 轮：模型已返回", rounds))
 
 		// 没有工具调用 = 模型在回答。这就是本轮的最终答复。
 		if len(reply.ToolCalls) == 0 {

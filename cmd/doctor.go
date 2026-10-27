@@ -150,9 +150,8 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		KnownHostsPath: opt.KnownHosts,
 		CommandTimeout: time.Duration(opt.CommandTimeout) * time.Second,
 		ProbeTimeout:   time.Duration(opt.ProbeTimeout) * time.Second,
-		OnProgress: func(msg string) {
-			fmt.Fprintf(os.Stderr, "  · %s\n", msg)
-		},
+		// 探测阶段的逐条日志只在 --dry-run 时有用；正常诊断里刷七行
+		// 会让人以为在重复做初始化。
 	})
 	if err != nil {
 		return fmt.Errorf("接入失败: %w", err)
@@ -208,10 +207,17 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 // openAgent 建立会话：探测能力、发现拓扑、取一次健康快照，然后构造助手。
 func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel, opt resolvedDoctorOptions) (*doctor.Agent, error) {
-	fmt.Fprintln(os.Stderr, "🔎 连接集群，采集初始信息 ...")
+	fmt.Fprintln(os.Stderr, "🔎 采集集群信息 ...")
 	snap, err := doctor.CollectSnapshot(ctx, cluster, opt.CephSrc)
 	if err != nil {
 		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "✓ %s｜%s\n", snap.Health, snap.Summary)
+	if snap.PodHealth != "" {
+		fmt.Fprintf(os.Stderr, "  pod：%s\n", firstLine(snap.PodHealth))
+	}
+	if len(snap.Findings) > 0 {
+		fmt.Fprintf(os.Stderr, "  初步判断：%s\n", snap.Findings[0].Summary)
 	}
 	reg := tools.RegistryFrom(tools.All(snapshotRunner{cluster}, opt.CephSrc))
 	return doctor.NewAgent(doctor.AgentConfig{
@@ -322,4 +328,13 @@ func listOrNone(items []string) string {
 		return "无"
 	}
 	return strings.Join(items, ", ")
+}
+
+// firstLine 取多行文本的第一行，用于紧凑的进度显示。
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
 }
