@@ -106,6 +106,11 @@ func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 		}
 	}
 
+	// 连接层的安全放宽项（例如未校验主机键）必须让模型和用户都知道。
+	if sn, ok := c.(interface{ SecurityNotes() []string }); ok {
+		s.Failures = append(s.Failures, sn.SecurityNotes()...)
+	}
+
 	s.PodHealth = collectPodHealth(ctx, c, entry)
 	s.Findings = correlate(s)
 	assignEvidenceIDs(&s)

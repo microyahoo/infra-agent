@@ -1,6 +1,7 @@
 package access
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -35,7 +36,7 @@ func TestTruncateOutputUnderLimit(t *testing.T) {
 }
 
 func TestClassifyTimeout(t *testing.T) {
-	err := classifyError(errDeadline, "", 0)
+	err := classifyError(context.DeadlineExceeded, "", 0)
 	if err.Kind != KindTimeout {
 		t.Errorf("kind = %v, want timeout", err.Kind)
 	}

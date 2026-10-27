@@ -20,9 +20,6 @@ func TestConfigDefaults(t *testing.T) {
 	if c.MaxOutputBytes != 262144 {
 		t.Errorf("MaxOutputBytes = %d", c.MaxOutputBytes)
 	}
-	if c.MaxConcurrency != 8 {
-		t.Errorf("MaxConcurrency = %d", c.MaxConcurrency)
-	}
 	if c.Policy == nil {
 		t.Error("Policy should default to DefaultPolicy()")
 	}

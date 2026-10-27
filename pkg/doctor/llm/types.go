@@ -56,7 +56,6 @@ const (
 	FinishReasonStop      FinishReason = "stop"   // 正常结束
 	FinishReasonLength    FinishReason = "length" // 触及 max_tokens 被截断
 	FinishReasonToolCalls FinishReason = "tool_calls"
-	FinishReasonFiltered  FinishReason = "content_filter"
 	FinishReasonUnknown   FinishReason = ""
 )
 

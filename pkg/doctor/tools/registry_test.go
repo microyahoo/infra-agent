@@ -19,7 +19,7 @@ func TestDefaultRegistryHasAllTools(t *testing.T) {
 		"host_check", "ceph_source_lookup", "explore", "run_command",
 	}
 	for _, w := range want {
-		if _, ok := r.Get(w); !ok {
+		if !r.Has(w) {
 			t.Errorf("missing tool %q", w)
 		}
 	}

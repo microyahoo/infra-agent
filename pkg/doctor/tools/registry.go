@@ -74,11 +74,6 @@ func (r *Registry) Register(t Tool) error {
 	return nil
 }
 
-func (r *Registry) Get(name string) (Tool, bool) {
-	t, ok := r.tools[name]
-	return t, ok
-}
-
 // Has 判断工具是否已注册。
 func (r *Registry) Has(name string) bool {
 	_, ok := r.tools[name]

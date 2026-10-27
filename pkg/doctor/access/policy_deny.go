@@ -331,3 +331,31 @@ func checkExecInnerDeny(p *Policy, argv []string) error {
 	}
 	return p.checkDeny(inner)
 }
+
+// containerIDIndex 返回容器 ID 在 args 中的下标（args 为 exec 之后的参数）。
+// 需要识别带取值的选项（如 --timeout 10），否则选项的值会被误当成容器 ID。
+func containerIDIndex(args []string) int {
+	withValue := map[string]bool{
+		"--timeout": true, "-t": true,
+		"--runtime": true, "-r": true,
+		"--runtime-endpoint": true, "-i": true,
+		"--image-endpoint": true,
+		"--namespace":      true, "-n": true,
+		"--user": true, "-u": true,
+		"--workdir": true, "-w": true,
+		"--env": true, "-e": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			return i
+		}
+		if strings.Contains(a, "=") {
+			continue
+		}
+		if withValue[a] && i+1 < len(args) {
+			i++
+		}
+	}
+	return -1
+}

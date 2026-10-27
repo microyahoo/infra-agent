@@ -22,7 +22,6 @@ type Config struct {
 	ProbeTimeout   time.Duration
 	DialTimeout    time.Duration
 	MaxOutputBytes int
-	MaxConcurrency int
 	Policy         *Policy
 	// ExtraBinaries 追加允许执行的只读程序（按存储系统配置）。
 	ExtraBinaries []string
@@ -60,9 +59,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MaxOutputBytes == 0 {
 		c.MaxOutputBytes = 256 * 1024
-	}
-	if c.MaxConcurrency == 0 {
-		c.MaxConcurrency = 8
 	}
 	if c.Policy == nil {
 		c.Policy = DefaultPolicy()

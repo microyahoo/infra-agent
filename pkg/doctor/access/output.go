@@ -37,8 +37,6 @@ type ToolError struct {
 
 func (e *ToolError) Error() string { return string(e.Kind) + ": " + e.Message }
 
-var errDeadline = context.DeadlineExceeded
-
 // classifyError 把底层错误转成带语义的 ToolError。
 // 超时必须被单独识别：模型看到原始的 "context deadline exceeded" 只会反复重试，
 // 或者误以为是自己参数写错，而它的真正含义往往是「目标组件无响应」。

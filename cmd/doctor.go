@@ -298,8 +298,8 @@ func runDoctorDryRun(ctx context.Context, cluster *access.Cluster) error {
 		fmt.Fprintf(&b, "集群拓扑: fsid %s，节点 %d，OSD %d\n",
 			orUnknown(topo.FSID), len(topo.Nodes), len(topo.OSDs))
 		for _, n := range topo.Nodes {
-			fmt.Fprintf(&b, "  - %s（主机 %s，OSD %d，角色 %s）\n",
-				n.Name, orUnknown(n.Host), len(n.OSDIDs), listOrNone(n.Roles))
+			fmt.Fprintf(&b, "  - %s（主机 %s，OSD %d）\n",
+				n.Name, orUnknown(n.Host), len(n.OSDIDs))
 		}
 	}
 	fmt.Fprintf(&b, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")

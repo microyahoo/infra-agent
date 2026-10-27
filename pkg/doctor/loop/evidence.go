@@ -66,20 +66,21 @@ func (c *Chain) Add(e Evidence) Evidence {
 		if _, exists := c.byID[e.ID]; !exists {
 			c.byID[e.ID] = len(c.items)
 			c.items = append(c.items, e)
+			// 把 nextID 推到该编号之后，避免后续新增与它撞号。
+			var n int
+			if _, err := fmt.Sscanf(e.ID, "ev-%d", &n); err == nil && n >= c.nextID {
+				c.nextID = n + 1
+			}
 			return e
 		}
 	}
 	e.ID = fmt.Sprintf("ev-%03d", c.nextID)
 	c.nextID++
 
-	if e.Round == 0 {
-		e.Round = c.round
-	}
 	c.byID[e.ID] = len(c.items)
 	c.items = append(c.items, e)
 
 	// 有新增证据说明本轮有进展，重置无进展计数。
-	c.lastAdd = c.round
 
 	// 若调用方显式传入了工具名，则同时视为已执行过的调用，避免重复执行。
 	if e.Tool != "" {
@@ -87,18 +88,6 @@ func (c *Chain) Add(e Evidence) Evidence {
 	}
 
 	return e
-}
-
-// Get 按 ID 查找证据。
-func (c *Chain) Get(id string) (Evidence, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	idx, ok := c.byID[id]
-	if !ok {
-		return Evidence{}, false
-	}
-	return c.items[idx], true
 }
 
 // All 返回按插入顺序排列的证据副本。
@@ -117,39 +106,6 @@ func (c *Chain) Len() int {
 	defer c.mu.RUnlock()
 
 	return len(c.items)
-}
-
-// ValidateRefs 校验引用列表中的每个 ID 都存在于链中；返回第一个缺失的 ID 的错误。
-func (c *Chain) ValidateRefs(ids []string) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	for _, id := range ids {
-		if _, ok := c.byID[id]; !ok {
-			return fmt.Errorf("证据引用 %q 不存在", id)
-		}
-	}
-	return nil
-}
-
-// MarkRound 记录循环进入了第 round 轮。
-func (c *Chain) MarkRound(round int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.round = round
-}
-
-// NoProgress 表示连续两轮及以上没有新增证据，循环应提前终止。
-func (c *Chain) NoProgress() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	// 尚未进入任何轮次时不算无进展。
-	if c.round == 0 {
-		return false
-	}
-	return c.round-c.lastAdd >= 2
 }
 
 // SeenCall 判断该工具调用（工具名 + 规范化参数）是否已经执行过。

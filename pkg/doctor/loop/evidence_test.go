@@ -7,28 +7,27 @@ import (
 
 func TestChainAssignsSequentialIDs(t *testing.T) {
 	c := NewChain()
-	e1 := c.Add(Evidence{Tool: "ceph_status", Summary: "ok"})
-	e2 := c.Add(Evidence{Tool: "osd_tree", Summary: "ok"})
-	if e1.ID != "ev-001" {
-		t.Errorf("first id = %q", e1.ID)
-	}
-	if e2.ID != "ev-002" {
-		t.Errorf("second id = %q", e2.ID)
+	e1 := c.Add(Evidence{Tool: "ceph_status"})
+	e2 := c.Add(Evidence{Tool: "osd_tree"})
+	if e1.ID != "ev-001" || e2.ID != "ev-002" {
+		t.Errorf("ids = %q/%q", e1.ID, e2.ID)
 	}
 }
 
-func TestChainGet(t *testing.T) {
+// 带显式 ID 的证据（会话开始时预置的快照证据）必须保留原编号，
+// 否则提示词里给出的编号与链里对不上。
+func TestChainPreservesExplicitID(t *testing.T) {
 	c := NewChain()
-	added := c.Add(Evidence{Tool: "x"})
-	got, ok := c.Get(added.ID)
-	if !ok {
-		t.Fatal("expected to find evidence")
+	seeded := c.Add(Evidence{ID: "ev-001", Tool: "snapshot:ceph_status"})
+	if seeded.ID != "ev-001" {
+		t.Errorf("id = %q", seeded.ID)
 	}
-	if got.Tool != "x" {
-		t.Errorf("tool = %q", got.Tool)
+	real := c.Add(Evidence{Tool: "ceph_status"})
+	if real.ID == "ev-001" {
+		t.Error("new evidence must not reuse an existing id")
 	}
-	if _, ok := c.Get("ev-999"); ok {
-		t.Error("should not find missing id")
+	if c.Len() != 2 {
+		t.Errorf("len = %d", c.Len())
 	}
 }
 
@@ -38,51 +37,14 @@ func TestChainAllPreservesOrder(t *testing.T) {
 		c.Add(Evidence{Tool: name})
 	}
 	all := c.All()
-	if len(all) != 3 {
-		t.Fatalf("got %d", len(all))
-	}
-	if all[0].Tool != "a" || all[2].Tool != "c" {
+	if len(all) != 3 || all[0].Tool != "a" || all[2].Tool != "c" {
 		t.Errorf("order broken: %+v", all)
-	}
-}
-
-func TestChainValidateRefs(t *testing.T) {
-	c := NewChain()
-	e1 := c.Add(Evidence{Tool: "a"})
-	c.Add(Evidence{Tool: "b"})
-
-	if err := c.ValidateRefs([]string{e1.ID}); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if err := c.ValidateRefs([]string{e1.ID, "ev-999"}); err == nil {
-		t.Fatal("expected error for missing ref")
-	}
-}
-
-func TestChainDetectsNoProgress(t *testing.T) {
-	c := NewChain()
-	if c.NoProgress() {
-		t.Error("empty chain is not progress")
-	}
-	c.Add(Evidence{Tool: "a"})
-	c.MarkRound(1)
-	if c.NoProgress() {
-		t.Error("just added evidence, should have progress")
-	}
-	c.MarkRound(2)
-	if !c.NoProgress() {
-		t.Error("expected no progress after 2 rounds without new evidence")
-	}
-	c.Add(Evidence{Tool: "b"})
-	c.MarkRound(3)
-	if c.NoProgress() {
-		t.Error("new evidence should reset no-progress")
 	}
 }
 
 func TestChainDedupsIdenticalCall(t *testing.T) {
 	c := NewChain()
-	c.Add(Evidence{Tool: "osd_detail", Args: map[string]any{"osd_id": 7}})
+	c.MarkCall("osd_detail", map[string]any{"osd_id": 7})
 	if !c.SeenCall("osd_detail", map[string]any{"osd_id": 7}) {
 		t.Error("expected identical call detected")
 	}
@@ -99,7 +61,6 @@ func TestChainRecordsDuration(t *testing.T) {
 	}
 }
 
-// 证据链必须能安全地并发读：报告渲染和循环状态检查可能位于不同协程。
 func TestChainConcurrentAddIsSafe(t *testing.T) {
 	c := NewChain()
 	done := make(chan struct{})

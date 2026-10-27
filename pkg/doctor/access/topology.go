@@ -19,7 +19,6 @@ type TopoNode struct {
 	Name   string
 	Host   string
 	OSDIDs []int
-	Roles  []string
 }
 
 // OSDPlacement 描述单个 OSD 的物理位置。
@@ -28,7 +27,6 @@ type OSDPlacement struct {
 	Host      string
 	Device    string // 解析后的物理盘，如 sdc
 	RawDevice string // 原始值，可能是 LVM 路径
-	DBDevice  string
 	Status    string
 }
 
