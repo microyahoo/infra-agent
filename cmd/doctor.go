@@ -149,7 +149,9 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 4. 超时以命令上下文为父，保证 Ctrl-C 能立即中断。
+	// 4. 连接阶段用总超时；交互模式下每轮另设新预算，见 runInteractive。
+	//    不能整个进程共用一个会过期的 context：首轮一旦跑满，
+	//    后续每次追问都会立刻 context deadline exceeded。
 	ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(opt.Timeout)*time.Second)
 	defer cancel()
 
@@ -212,7 +214,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	})
 
 	if opt.Interactive {
-		return runInteractiveSession(ctx, d, opt)
+		return runInteractiveSession(cmd.Context(), ctx, d, opt)
 	}
 
 	rep, err := d.Run(ctx, doctor.Task{Question: opt.Question})
