@@ -24,6 +24,8 @@ type Config struct {
 	MaxOutputBytes int
 	MaxConcurrency int
 	Policy         *Policy
+	// ExtraBinaries 追加允许执行的只读程序（按存储系统配置）。
+	ExtraBinaries []string
 
 	// OnProgress 可选：接入层在耗时操作前后调用它，便于 CLI 展示进度。
 	// 只用于显示，不参与任何决策。

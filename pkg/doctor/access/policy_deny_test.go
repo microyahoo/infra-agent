@@ -203,3 +203,31 @@ func TestDenyPolicyAllowsTCInspection(t *testing.T) {
 		}
 	}
 }
+
+// 不同存储系统的只读命令可以按配置追加，不必改代码。
+func TestPolicyAllowsExtraBinaries(t *testing.T) {
+	p := DefaultDenyPolicy()
+
+	// 默认不认识 juicefs
+	if err := p.Check([]string{"juicefs", "status", "redis://x"}); err == nil {
+		t.Error("juicefs should be rejected before being allowed")
+	}
+
+	p.AllowExtraBinaries([]string{"juicefs", "redis-cli"})
+	if err := p.Check([]string{"juicefs", "status", "redis://x"}); err != nil {
+		t.Errorf("juicefs should be allowed after configuration: %v", err)
+	}
+	if err := p.Check([]string{"redis-cli", "info"}); err != nil {
+		t.Errorf("redis-cli should be allowed: %v", err)
+	}
+
+	// 追加程序不会放宽变更类命令
+	for _, argv := range [][]string{
+		{"systemctl", "restart", "juicefs"},
+		{"rm", "-rf", "/mnt/jfs"},
+	} {
+		if err := p.Check(argv); err == nil {
+			t.Errorf("LEAK: mutation allowed after extra binaries: %v", argv)
+		}
+	}
+}

@@ -39,12 +39,14 @@ type resolvedDoctorOptions struct {
 	MaxPerTool       int
 	MaxCallsPerRound int
 
-	Timeout     int
-	Question    string
-	CephSrc     string
-	DryRun      bool
-	SelfCheck   bool
-	Interactive bool
+	Timeout       int
+	Question      string
+	CephSrc       string
+	Profile       string
+	ExtraBinaries []string
+	DryRun        bool
+	SelfCheck     bool
+	Interactive   bool
 }
 
 // resolveDoctorOptions 合并 flag、配置与默认值。
@@ -115,12 +117,14 @@ func resolveDoctorOptions(cmd *cobra.Command) resolvedDoctorOptions {
 		MaxPerTool:       flagInt("max-per-tool", "doctor.loop.max_per_tool", 5),
 		MaxCallsPerRound: flagInt("max-calls-per-round", "doctor.loop.max_calls_per_round", 2),
 
-		Timeout:     flagInt("timeout", "doctor.timeout", 600),
-		Question:    doctorOpts.Question,
-		CephSrc:     expandHome(flagString("ceph-src", "doctor.ceph.source_dir", "")),
-		DryRun:      flagBool("dry-run", "doctor.dry_run"),
-		SelfCheck:   flagBool("self-check", "doctor.self_check"),
-		Interactive: flagBool("interactive", "doctor.interactive"),
+		Timeout:       flagInt("timeout", "doctor.timeout", 600),
+		Question:      doctorOpts.Question,
+		CephSrc:       expandHome(flagString("ceph-src", "doctor.ceph.source_dir", "")),
+		Profile:       flagString("profile", "doctor.profile", "auto"),
+		ExtraBinaries: viper.GetStringSlice("doctor.policy.extra_binaries"),
+		DryRun:        flagBool("dry-run", "doctor.dry_run"),
+		SelfCheck:     flagBool("self-check", "doctor.self_check"),
+		Interactive:   flagBool("interactive", "doctor.interactive"),
 	}
 }
 

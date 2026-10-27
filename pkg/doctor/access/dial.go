@@ -77,6 +77,10 @@ func Dial(ctx context.Context, cfg Config) (*Cluster, error) {
 	}
 	cfg.authMethods = auth
 
+	if len(cfg.ExtraBinaries) > 0 {
+		cfg.Policy.AllowExtraBinaries(cfg.ExtraBinaries)
+	}
+
 	hostCB, keyNote, err := hostKeyCallback(cfg.KnownHostsPath)
 	if err != nil {
 		return nil, err

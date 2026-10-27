@@ -204,6 +204,9 @@ type Snapshot struct {
 	Topology           *access.Topology
 	Failures           []string
 
+	// RunningProcesses 是入口节点上的进程名列表（通用 profile 用）。
+	RunningProcesses string
+
 	// PodHealth 是 Rook 层各组件 pod 的健康摘要。
 	// Rook 部署下，daemon 的问题首先体现在 pod 状态上（重启次数、
 	// CrashLoopBackOff、退出码），这是"看一眼就知道"的层。

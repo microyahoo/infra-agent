@@ -88,6 +88,23 @@ func DefaultDenyPolicy() *Policy {
 	return &Policy{deny: d}
 }
 
+// AllowExtraBinaries 追加允许执行的程序名。
+//
+// 不同存储系统的只读命令各不相同（juicefs status、redis-cli info、
+// cephfs-top…），把它们写死在代码里既不可能也不合理。
+// 通过配置追加后，变更类命令仍然被 mutatingPatterns 拦住。
+func (p *Policy) AllowExtraBinaries(names []string) {
+	if p.deny == nil {
+		return
+	}
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			p.deny.allowedBinaries[n] = true
+		}
+	}
+}
+
 // checkDeny 实现禁止清单校验。
 func (p *Policy) checkDeny(argv []string) error {
 	d := p.deny
