@@ -98,8 +98,11 @@ func (p *Policy) checkDeny(argv []string) error {
 		return fmt.Errorf("rejected: 程序 %q 不在允许列表内（只读诊断工具可执行）", bin)
 	}
 
-	// 参数里不允许出现 shell 元字符本就是常态（argv 不透传 shell），
-	// 但显式拒绝能让注入尝试立刻暴露。
+	// 参数里不允许出现真正的换行/回车/NUL。argv 不经过 shell，这类字符
+	// 只会出现在拼注入的场景里。
+	//
+	// 但 kubectl 的 jsonpath 表达式需要 \t \n 作为分隔符——它们在这里是
+	// 两个字符的反斜杠转义，不是真实控制字符，因此按原始字符判断即可。
 	for _, a := range argv {
 		if strings.ContainsAny(a, "\n\r\x00") {
 			return fmt.Errorf("rejected: 参数含控制字符")

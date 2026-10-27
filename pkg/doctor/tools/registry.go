@@ -121,6 +121,7 @@ func All(r Runner, srcDir string) []Tool {
 		NewPGDetail(r),
 		NewOSDDetail(r),
 		NewDaemonLog(r),
+		NewRookPods(r),
 		NewSlowOps(r),
 		NewPerfCounters(r),
 		NewHostIO(r),
