@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/microyahoo/infra-agent/internal/agent"
@@ -26,8 +27,13 @@ type sessionEntry struct {
 	agent     *agent.Agent
 	sess      *session.Session
 	clusterID string
-	lastUsed  time.Time
-	mu        sync.Mutex // 同一个群串行处理，避免两条消息交叉
+	lastUsed  atomic.Int64 // UnixNano
+	mu        sync.Mutex   // 同一个群串行处理，避免两条消息交叉
+}
+
+func (e *sessionEntry) touch() { e.lastUsed.Store(time.Now().UnixNano()) }
+func (e *sessionEntry) idleSince() time.Time {
+	return time.Unix(0, e.lastUsed.Load())
 }
 
 func newSessionManager(cfg Config) *SessionManager {
@@ -38,7 +44,7 @@ func newSessionManager(cfg Config) *SessionManager {
 func (m *SessionManager) get(ctx context.Context, chatID, clusterName string) (*sessionEntry, error) {
 	m.mu.Lock()
 	if e, ok := m.entries[chatID]; ok && e.clusterID == clusterName {
-		e.lastUsed = time.Now()
+		e.touch()
 		m.mu.Unlock()
 		return e, nil
 	}
@@ -61,7 +67,8 @@ func (m *SessionManager) get(ctx context.Context, chatID, clusterName string) (*
 
 	ag := sess.NewAgent(m.cfg.newModel(), m.cfg.Loop)
 
-	e := &sessionEntry{agent: ag, sess: sess, clusterID: clusterName, lastUsed: time.Now()}
+	e := &sessionEntry{agent: ag, sess: sess, clusterID: clusterName}
+	e.touch()
 	m.mu.Lock()
 	// 若同名会话在并发时已被建好，保留先建的那个
 	if old, ok := m.entries[chatID]; ok && old.clusterID == clusterName {
@@ -70,7 +77,9 @@ func (m *SessionManager) get(ctx context.Context, chatID, clusterName string) (*
 		return old, nil
 	}
 	if old, ok := m.entries[chatID]; ok {
+		old.mu.Lock()
 		_ = old.sess.Close()
+		old.mu.Unlock()
 	}
 	m.entries[chatID] = e
 	m.mu.Unlock()
@@ -86,14 +95,16 @@ func (m *SessionManager) cleanupIdle(idle time.Duration) {
 	m.mu.Lock()
 	var dead []*sessionEntry
 	for id, e := range m.entries {
-		if e.lastUsed.Before(cutoff) {
+		if e.idleSince().Before(cutoff) {
 			dead = append(dead, e)
 			delete(m.entries, id)
 		}
 	}
 	m.mu.Unlock()
 	for _, e := range dead {
+		e.mu.Lock()
 		_ = e.sess.Close()
+		e.mu.Unlock()
 	}
 }
 
@@ -107,7 +118,9 @@ func (m *SessionManager) Close() {
 	m.entries = map[string]*sessionEntry{}
 	m.mu.Unlock()
 	for _, e := range all {
+		e.mu.Lock()
 		_ = e.sess.Close()
+		e.mu.Unlock()
 	}
 }
 
@@ -117,11 +130,13 @@ func (c Config) newModel() llm.ChatModel {
 		return c.NewModel()
 	}
 	return llm.NewClient(llm.Config{
-		BaseURL:    c.LLM.BaseURL,
-		APIKey:     c.LLM.APIKey,
-		Model:      c.LLM.Model,
-		MaxTokens:  c.LLM.MaxTokens,
-		MaxRetries: c.LLM.MaxRetries,
+		BaseURL:     c.LLM.BaseURL,
+		APIKey:      c.LLM.APIKey,
+		Model:       c.LLM.Model,
+		MaxTokens:   c.LLM.MaxTokens,
+		MaxRetries:  c.LLM.MaxRetries,
+		Temperature: c.LLM.Temperature,
+		Timeout:     c.LLM.Timeout,
 	})
 }
 

@@ -21,11 +21,13 @@ import (
 
 // LLMConfig 是机器人使用的模型配置。
 type LLMConfig struct {
-	BaseURL    string
-	APIKey     string
-	Model      string
-	MaxTokens  int
-	MaxRetries int
+	BaseURL     string
+	APIKey      string
+	Model       string
+	MaxTokens   int
+	MaxRetries  int
+	Temperature float64
+	Timeout     time.Duration
 }
 
 // Config 是飞书机器人的配置。
@@ -172,6 +174,7 @@ func (b *Bot) handle(ctx context.Context, event *larkim.P2MessageReceiveV1) {
 		defer entry.mu.Unlock()
 
 		reply, err := entry.agent.Send(cctx, text)
+		entry.touch() // 长时间调查结束后刷新空闲计时
 		if err != nil {
 			b.reply(cctx, msgID, "调查中断："+err.Error())
 			return

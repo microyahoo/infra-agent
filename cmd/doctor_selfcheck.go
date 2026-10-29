@@ -191,14 +191,6 @@ func placementOf(topo *access.Topology, osdID int) (device, host string) {
 	return "", ""
 }
 
-// firstLogPath 从拓扑里推出一个真实存在的日志文件路径，用于 read_log 自检。
-func firstLogPath(topo *access.Topology) string {
-	if topo == nil || len(topo.OSDs) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("/var/log/ceph/ceph-osd.%d.log", topo.OSDs[0].ID)
-}
-
 // nowMillis 返回当前毫秒时间戳，用于统计单个工具的耗时。
 func nowMillis() int64 { return time.Now().UnixMilli() }
 

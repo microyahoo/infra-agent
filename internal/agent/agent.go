@@ -159,17 +159,18 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 		a.msgs = append(a.msgs, llm.Message{Role: llm.RoleAssistant, ToolCalls: calls})
 
 		for _, tc := range calls {
+			// read_skill 是内置工具：直接从嵌入的文档读取，不进证据链。
+			// 不计入工具调用预算，也不受 maxCallsPerTurn 限制。
+			if tc.Name == readSkillToolName {
+				a.msgs = append(a.msgs, llm.ToolResultMessage(tc.ID, skillContent(parseArgs(tc.Args))))
+				continue
+			}
 			if callsThisTurn >= a.maxCallsPerTurn {
 				a.msgs = append(a.msgs, llm.ToolResultMessage(tc.ID,
 					"本轮工具调用已达上限，请基于现有信息回答用户。"))
 				continue
 			}
 			callsThisTurn++
-			// read_skill 是内置工具：直接从嵌入的文档读取，不进证据链。
-			if tc.Name == readSkillToolName {
-				a.msgs = append(a.msgs, llm.ToolResultMessage(tc.ID, skillContent(parseArgs(tc.Args))))
-				continue
-			}
 			// 相同工具 + 相同参数已经执行过：不再真的跑一遍，
 			// 直接把"已有结果"告诉模型。这是不重复劳动的结构性保证。
 			if a.chain.SeenCall(tc.Name, parseArgs(tc.Args)) {

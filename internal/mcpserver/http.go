@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -68,13 +69,17 @@ func ServeHTTP(ctx context.Context, addr string, srv *mcp.Server, token string, 
 
 func bearerAuth(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+token {
+		if !secureEqual(r.Header.Get("Authorization"), "Bearer "+token) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="infra-agent"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func secureEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func isLoopback(host string) bool {

@@ -59,6 +59,9 @@ func handlerFor(p Provider, name string) mcp.ToolHandler {
 			}
 			return errorResult(err), nil
 		}
+		if res == nil {
+			return errorResult(fmt.Errorf("工具 %s 没有返回结果", name)), nil
+		}
 
 		payload := map[string]any{"summary": res.Summary}
 		if res.Data != nil {
