@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -20,10 +19,6 @@ func New() *viper.Viper {
 
 // Apply 把环境变量绑定与默认值写入 v。
 func Apply(v *viper.Viper) {
-	v.SetEnvPrefix("INFRA_AGENT")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AutomaticEnv()
-
 	_ = v.BindEnv("llm.api_key", "INFRA_AGENT_LLM_API_KEY")
 	_ = v.BindEnv("feishu.app_id", "FEISHU_APP_ID")
 	_ = v.BindEnv("feishu.app_secret", "FEISHU_APP_SECRET")
