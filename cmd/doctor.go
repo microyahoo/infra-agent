@@ -4,47 +4,37 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
-	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/agent"
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
-	"github.com/microyahoo/infra-agent/pkg/doctor"
+	"github.com/microyahoo/infra-agent/internal/config"
+	"github.com/microyahoo/infra-agent/internal/session"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
-// doctorOptions 是 doctor 命令的全部参数。
-type doctorOptions struct {
-	Host             string
-	Port             int
-	User             string
-	Key              string
-	Password         string
-	KnownHosts       string
-	CephSrc          string
-	Question         string
-	Timeout          int
-	MaxRounds        int
-	MaxToolCalls     int
-	MaxPerTool       int
-	MaxCallsPerRound int
-	Model            string
-	BaseURL          string
-	APIKeyEnv        string
-	SSHTimeout       int
-	ProbeTimeout     int
-	MaxTokens        int
-	LLMTimeout       int
-	LLMRetries       int
-	DryRun           bool
-	SelfCheck        bool
-	Interactive      bool
+// doctorFlagBindings 把命令行 flag 映射到配置键。
+// host/port/key 等"覆盖所选集群"的 flag 由 overrideCluster 单独处理。
+var doctorFlagBindings = map[string]string{
+	"model":               "llm.model",
+	"base-url":            "llm.base_url",
+	"api-key-env":         "llm.api_key_env",
+	"max-tokens":          "llm.max_tokens",
+	"llm-timeout":         "llm.timeout",
+	"llm-retries":         "llm.max_retries",
+	"max-rounds":          "loop.max_rounds",
+	"max-tool-calls":      "loop.max_tool_calls",
+	"max-calls-per-round": "loop.max_calls_per_round",
+	"timeout":             "run.timeout",
+	"dry-run":             "run.dry_run",
+	"self-check":          "run.self_check",
+	"interactive":         "run.interactive",
+	"ceph-src":            "ceph.source_dir",
 }
 
-var doctorOpts doctorOptions
-
-// doctorCmd represents the doctor command
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "通过 SSH 调查 Ceph 集群（对话式）",
@@ -57,147 +47,99 @@ var doctorCmd = &cobra.Command{
 
 示例:
   # 交互式调查
-  infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa --interactive
+  infra-agent doctor --cluster stor-01
 
   # 问一个问题、拿一个回答，然后退出
-  infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa \
-    --question "集群为什么 warn 了"
+  infra-agent doctor --cluster stor-01 --question "集群为什么 warn 了"
 
   # 只验证 SSH 与探测结果，不消耗模型额度
-  infra-agent doctor --host 10.0.0.1 --key ~/.ssh/id_rsa --dry-run
+  infra-agent doctor --cluster stor-01 --dry-run
 `,
-	RunE: runDoctor,
-	// 运行期错误（接入失败、模型失败）只需打印错误本身；
-	// 参数错误由 cobra 统一提示，用户可通过 --help 查看完整用法。
+	RunE:         runDoctor,
 	SilenceUsage: true,
 }
 
 func init() {
 	rootCmd.AddCommand(doctorCmd)
-
 	f := doctorCmd.Flags()
-	f.StringVar(&doctorOpts.Host, "host", "", "首节点 IP")
-	f.IntVar(&doctorOpts.Port, "port", 22, "SSH 端口")
-	f.StringVar(&doctorOpts.User, "user", "root", "SSH 用户")
-	f.StringVar(&doctorOpts.Key, "key", "", "私钥路径")
-	f.StringVar(&doctorOpts.Password, "password", "", "SSH 密码（不推荐）")
-	f.StringVar(&doctorOpts.KnownHosts, "known-hosts", "", "known_hosts 路径，留空不校验")
-	f.StringVar(&doctorOpts.CephSrc, "ceph-src", "", "本地 Ceph 源码目录")
 
-	f.StringVar(&doctorOpts.Question, "question", "", "单次提问的内容（配合 --interactive=false）")
-	f.IntVar(&doctorOpts.Timeout, "timeout", 600, "总超时（秒）")
-	f.IntVar(&doctorOpts.MaxRounds, "max-rounds", 12, "单次提问内最多的模型往返轮数")
-	f.IntVar(&doctorOpts.MaxToolCalls, "max-tool-calls", 20, "单次提问内最多的工具调用数")
-	f.IntVar(&doctorOpts.MaxPerTool, "max-per-tool", 5, "单个工具的最大调用次数")
-	f.IntVar(&doctorOpts.MaxCallsPerRound, "max-calls-per-round", 2, "单轮并行的工具调用上限")
-	f.StringVar(&doctorOpts.Model, "model", "", "模型名，默认读配置")
-	f.StringVar(&doctorOpts.BaseURL, "base-url", "", "OpenAI 兼容地址，默认读配置")
-	f.StringVar(&doctorOpts.APIKeyEnv, "api-key-env", "OPENAI_API_KEY", "提供 API Key 的环境变量名")
-	f.IntVar(&doctorOpts.SSHTimeout, "ssh-timeout", 30, "单条命令超时（秒）")
-	f.BoolVar(&doctorOpts.DryRun, "dry-run", false, "仅连接并探测能力与拓扑，不调用模型")
-	f.BoolVar(&doctorOpts.SelfCheck, "self-check", false, "在真实集群上逐个运行诊断工具（不调用模型），用于验证解析是否正确")
-	f.BoolVar(&doctorOpts.Interactive, "interactive", true, "进入交互模式（用 --interactive=false 改为单次提问）")
-	f.IntVar(&doctorOpts.LLMRetries, "llm-retries", -1, "模型请求失败时的重试次数（-1 表示用默认值 2）")
-	f.IntVar(&doctorOpts.MaxTokens, "max-tokens", 8192, "单次模型回复的最大 token 数（0 表示交给服务端默认值）")
-	f.IntVar(&doctorOpts.LLMTimeout, "llm-timeout", 120, "单次模型请求超时（秒）")
-	f.IntVar(&doctorOpts.ProbeTimeout, "probe-timeout", 8, "能力探测与拓扑发现的单条命令超时（秒）")
+	f.String("cluster", "", "集群名（对应配置里的 clusters）")
+	f.String("host", "", "首节点 IP（覆盖所选集群）")
+	f.Int("port", 0, "SSH 端口（覆盖所选集群）")
+	f.String("user", "", "SSH 用户（覆盖所选集群）")
+	f.String("key", "", "私钥路径（覆盖所选集群）")
+	f.String("password", "", "SSH 密码（覆盖所选集群）")
+	f.String("known-hosts", "", "known_hosts 路径（覆盖所选集群）")
+	f.Int("ssh-timeout", 0, "单条命令超时（秒，覆盖所选集群）")
+	f.Int("probe-timeout", 0, "探测超时（秒，覆盖所选集群）")
+	f.String("ceph-src", "", "本地 Ceph 源码目录")
 
-	_ = doctorCmd.MarkFlagRequired("host")
+	f.String("question", "", "单次提问的内容（配合 --interactive=false）")
+	f.Int("timeout", 0, "总超时（秒）")
+	f.Int("max-rounds", 0, "单次提问内最多的模型往返轮数")
+	f.Int("max-tool-calls", 0, "单次提问内最多的工具调用数")
+	f.Int("max-calls-per-round", 0, "单轮并行的工具调用上限")
+	f.String("model", "", "模型名")
+	f.String("base-url", "", "OpenAI 兼容地址")
+	f.String("api-key-env", "", "提供 API Key 的环境变量名")
+	f.Int("max-tokens", 0, "单次模型回复的最大 token 数")
+	f.Int("llm-timeout", 0, "单次模型请求超时（秒）")
+	f.Int("llm-retries", 0, "模型请求失败时的重试次数（-1 表示默认 2）")
+	f.Bool("dry-run", false, "仅连接并探测能力与拓扑，不调用模型")
+	f.Bool("self-check", false, "在真实集群上逐个运行诊断工具（不调用模型）")
+	f.Bool("interactive", true, "进入交互模式")
 }
 
-func runDoctor(cmd *cobra.Command, args []string) error {
-	// 0. 合并配置：命令行 > 配置文件 > 内置默认值。
-	opt := resolveDoctorOptions(cmd)
-
-	// 1. 认证方式检查放在最前，避免连上之后再报错。
-	if opt.PrivateKey == "" && opt.Password == "" {
-		return fmt.Errorf("必须提供 SSH 认证方式：--key（私钥路径）和 --password（密码）均未设置，" +
-			"可在配置文件的 doctor.ssh 段中设置")
+func runDoctor(cmd *cobra.Command, _ []string) error {
+	v := viper.GetViper()
+	if err := config.BindFlags(v, cmd.Flags(), doctorFlagBindings); err != nil {
+		return err
 	}
-
-	// 2. 非 --dry-run 时读取 API Key；放在建连之前，参数错误无需等待网络。
-	//    交互模式下延迟到第一次提问再校验：用户可能只是进去看看 :help 就退出，
-	//    不该因为没配 key 连界面都进不去。
-	apiKey := ""
-	needKey := !opt.DryRun && !opt.SelfCheck
-	if needKey {
-		apiKey = opt.APIKey
-		if apiKey == "" {
-			apiKey = os.Getenv(opt.APIKeyEnv)
-		}
-		if apiKey == "" && !opt.Interactive {
-			return fmt.Errorf("未找到 API Key：请设置环境变量 %s，或在配置文件 doctor.llm.api_key 中填写", opt.APIKeyEnv)
-		}
-	}
-	model := opt.Model
-	baseURL := opt.BaseURL
-
-	// 4. 连接阶段用总超时；交互模式下每轮另设新预算，见 runInteractive。
-	//    不能整个进程共用一个会过期的 context：首轮一旦跑满，
-	//    后续每次追问都会立刻 context deadline exceeded。
-	ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(opt.Timeout)*time.Second)
-	defer cancel()
-
-	// 5. 连接接入层。
-	fmt.Fprintf(os.Stderr, "🔌 连接 %s ...\n", opt.Host)
-	cluster, err := access.Dial(ctx, access.Config{
-		Host:           opt.Host,
-		Port:           opt.Port,
-		User:           opt.User,
-		Password:       opt.Password,
-		PrivateKeyPath: opt.PrivateKey,
-		KnownHostsPath: opt.KnownHosts,
-		CommandTimeout: time.Duration(opt.CommandTimeout) * time.Second,
-		ExtraBinaries:  opt.ExtraBinaries,
-		ProbeTimeout:   time.Duration(opt.ProbeTimeout) * time.Second,
-		// 探测阶段的逐条日志只在 --dry-run 时有用；正常诊断里刷七行
-		// 会让人以为在重复做初始化。
-	})
-	if err != nil {
-		return fmt.Errorf("接入失败: %w", err)
-	}
-	defer cluster.Close()
-	fmt.Fprintf(os.Stderr, "✓ SSH 连接已建立\n")
-
-	if opt.DryRun {
-		return runDoctorDryRun(ctx, cluster)
-	}
-	if opt.SelfCheck {
-		return runSelfCheck(ctx, cluster)
-	}
-
-	// 6. 组装调查助手。
-	//    交互模式下延迟到用户真正提问时才建立，避免"进来什么都没问"
-	//    就消耗一次探测、拓扑与模型客户端构造。
-	newAgent := func(key string) (*doctor.Agent, error) {
-		return openAgent(ctx, cluster, llm.NewClient(llm.Config{
-			BaseURL:     baseURL,
-			APIKey:      key,
-			Model:       model,
-			Temperature: opt.Temperature,
-			MaxTokens:   opt.MaxTokens,
-			Timeout:     time.Duration(opt.LLMTimeout) * time.Second,
-			MaxRetries:  opt.LLMRetries,
-		}), opt)
-	}
-
-	if opt.Interactive {
-		return runInteractive(cmd.Context(), newAgent, apiKey, needKey, opt)
-	}
-
-	// 非交互：一条问题、一次回答，然后退出。
-	if needKey && apiKey == "" {
-		return fmt.Errorf("未找到 API Key：请设置环境变量 %s，或在配置文件 doctor.llm.api_key 中填写", opt.APIKeyEnv)
-	}
-	a, err := newAgent(apiKey)
+	cfg, err := config.Load(v, nil)
 	if err != nil {
 		return err
 	}
-	question := strings.TrimSpace(opt.Question)
+
+	cl, err := cfg.Pick(stringFlag(cmd.Flags(), "cluster"))
+	if err != nil {
+		return err
+	}
+	cl = overrideCluster(cmd.Flags(), cl)
+
+	ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(cfg.Run.Timeout)*time.Second)
+	defer cancel()
+
+	if cfg.Run.DryRun || cfg.Run.SelfCheck {
+		sess, err := openSession(ctx, cfg, cl, false)
+		if err != nil {
+			return fmt.Errorf("接入失败: %w", err)
+		}
+		defer sess.Close()
+		if cfg.Run.DryRun {
+			return runDoctorDryRun(ctx, sess)
+		}
+		return runSelfCheck(ctx, sess)
+	}
+
+	fmt.Fprintf(os.Stderr, "🔌 连接 %s ...\n", cl.Host)
+
+	if cfg.Run.Interactive {
+		return runInteractive(ctx, cfg, func(c context.Context) (*agent.Agent, *session.Session, error) {
+			return openAgent(c, cfg, cl)
+		})
+	}
+
+	ag, sess, err := openAgent(ctx, cfg, cl)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	question := strings.TrimSpace(stringFlag(cmd.Flags(), "question"))
 	if question == "" {
 		question = "简单说明一下这个集群现在的状态，有异常就说异常。"
 	}
-	reply, err := a.Send(ctx, question)
+	reply, err := ag.Send(ctx, question)
 	if err != nil {
 		return err
 	}
@@ -205,121 +147,74 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// openAgent 建立会话：探测能力、发现拓扑、取一次健康快照，然后构造助手。
-func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel, opt resolvedDoctorOptions) (*doctor.Agent, error) {
+// openSession 建立连接与工具表；collect 为真时再取一次会话快照。
+func openSession(ctx context.Context, cfg config.Config, cl config.Cluster, collect bool) (*session.Session, error) {
 	fmt.Fprintln(os.Stderr, "🔎 采集集群信息 ...")
-
-	agent, snap, err := doctor.Open(ctx, doctor.OpenConfig{
-		Cluster:          cluster,
-		Model:            model,
-		SourceDir:        opt.CephSrc,
-		MaxRounds:        opt.MaxRounds,
-		MaxCallsPerRound: opt.MaxCallsPerRound,
-		MaxCallsPerTurn:  opt.MaxToolCalls,
-		OnEvent:          func(msg string) { fmt.Fprintf(os.Stderr, "  · %s\n", msg) },
+	return session.Open(ctx, session.Options{
+		Cluster:         cl,
+		Policy:          cfg.Policy,
+		SourceDir:       cfg.Ceph.SourceDir,
+		CollectSnapshot: collect,
+		OnEvent:         func(msg string) { fmt.Fprintf(os.Stderr, "  · %s\n", msg) },
 	})
+}
+
+// openAgent 建好会话与模型，返回可对话的 agent。
+func openAgent(ctx context.Context, cfg config.Config, cl config.Cluster) (*agent.Agent, *session.Session, error) {
+	if cfg.LLM.APIKey == "" {
+		return nil, nil, fmt.Errorf("未找到 API Key：请设置环境变量 %s，或在配置文件 llm.api_key 中填写", cfg.LLM.APIKeyEnv)
+	}
+	sess, err := openSession(ctx, cfg, cl, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("接入失败: %w", err)
 	}
+	snap := sess.Snapshot()
 	fmt.Fprintf(os.Stderr, "✓ %s｜%s\n", snap.Health, snap.Summary)
-	if snap.PodHealth != "" {
-		fmt.Fprintf(os.Stderr, "  pod：%s\n", firstLine(snap.PodHealth))
-	}
-	if len(snap.Findings) > 0 {
-		fmt.Fprintf(os.Stderr, "  初步判断：%s\n", snap.Findings[0].Summary)
-	}
-	return agent, nil
+	return sess.NewAgent(newModel(cfg), cfg.Loop), sess, nil
 }
 
-// runDoctorDryRun 只做能力探测与拓扑发现，打印摘要后返回，不调用模型。
-func runDoctorDryRun(ctx context.Context, cluster *access.Cluster) error {
-	nodes := cluster.Nodes()
-	if len(nodes) == 0 {
-		return fmt.Errorf("未能确定任何节点")
-	}
-	primary := nodes[0]
-
-	fmt.Fprintf(os.Stderr, "🔎 探测节点能力 ...\n")
-	caps := cluster.Capabilities(ctx, primary)
-	fmt.Fprintf(os.Stderr, "  → 后端 %s，ceph CLI %s\n", orUnknown(caps.Backend), yesNo(caps.CephCLI))
-
-	fmt.Fprintf(os.Stderr, "🔎 发现集群拓扑 ...\n")
-	topo, topoErr := cluster.Topology(ctx)
-	if topoErr != nil {
-		fmt.Fprintf(os.Stderr, "  → 拓扑发现失败：%v\n", topoErr)
-	} else if topo != nil {
-		fmt.Fprintf(os.Stderr, "  → %d 个节点，%d 个 OSD\n", len(topo.Nodes), len(topo.OSDs))
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "SSH 接入验证（dry-run）\n")
-	fmt.Fprintf(&b, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(&b, "入口节点: %s\n", primary)
-	fmt.Fprintf(&b, "诊断后端: %s\n", orUnknown(caps.Backend))
-	fmt.Fprintf(&b, "ceph CLI: %s\n", yesNo(caps.CephCLI))
-	if caps.CephVersion != "" {
-		fmt.Fprintf(&b, "ceph 版本: %s\n", caps.CephVersion)
-	}
-	fmt.Fprintf(&b, "kubectl: %s\n", yesNo(caps.Kubectl))
-	if caps.ContainerRT != "" && caps.ContainerRT != "none" {
-		fmt.Fprintf(&b, "容器运行时: %s\n", caps.ContainerRT)
-	}
-	fmt.Fprintf(&b, "日志目录: %s\n", listOrNone(caps.LogDirs))
-	tools := make([]string, 0, len(caps.HostTools))
-	for name, ok := range caps.HostTools {
-		if ok {
-			tools = append(tools, name)
-		}
-	}
-	sort.Strings(tools)
-	fmt.Fprintf(&b, "宿主机工具: %s\n", listOrNone(tools))
-
-	if topoErr != nil {
-		fmt.Fprintf(&b, "集群拓扑: 发现失败：%v\n", topoErr)
-	} else {
-		fmt.Fprintf(&b, "集群拓扑: fsid %s，节点 %d，OSD %d\n",
-			orUnknown(topo.FSID), len(topo.Nodes), len(topo.OSDs))
-		for _, n := range topo.Nodes {
-			fmt.Fprintf(&b, "  - %s（主机 %s，OSD %d）\n",
-				n.Name, orUnknown(n.Host), len(n.OSDIDs))
-		}
-	}
-	fmt.Fprintf(&b, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(&b, "dry-run 结束：SSH 与探测已完成，未调用模型\n")
-
-	fmt.Fprint(os.Stdout, b.String())
-	return nil
+func newModel(cfg config.Config) llm.ChatModel {
+	return llm.NewClient(llm.Config{
+		BaseURL:     cfg.LLM.BaseURL,
+		APIKey:      cfg.LLM.APIKey,
+		Model:       cfg.LLM.Model,
+		Temperature: cfg.LLM.Temperature,
+		MaxTokens:   cfg.LLM.MaxTokens,
+		Timeout:     time.Duration(cfg.LLM.Timeout) * time.Second,
+		MaxRetries:  cfg.LLM.MaxRetries,
+	})
 }
 
-// orUnknown 把空字符串显示为 unknown。
-func orUnknown(s string) string {
-	if strings.TrimSpace(s) == "" {
-		return "unknown"
-	}
-	return s
+func stringFlag(flags *pflag.FlagSet, name string) string {
+	v, _ := flags.GetString(name)
+	return v
 }
 
-// yesNo 把布尔值转为中文可读文本。
-func yesNo(ok bool) string {
-	if ok {
-		return "可用"
+// overrideCluster 用显式给出的 flag 覆盖所选集群的字段。
+func overrideCluster(flags *pflag.FlagSet, cl config.Cluster) config.Cluster {
+	if flags.Changed("host") {
+		cl.Host, _ = flags.GetString("host")
 	}
-	return "不可用"
-}
-
-// listOrNone 把列表拼接为逗号分隔文本，空列表显示为「无」。
-func listOrNone(items []string) string {
-	if len(items) == 0 {
-		return "无"
+	if flags.Changed("port") {
+		cl.Port, _ = flags.GetInt("port")
 	}
-	return strings.Join(items, ", ")
-}
-
-// firstLine 取多行文本的第一行，用于紧凑的进度显示。
-func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return strings.TrimSpace(s[:i])
+	if flags.Changed("user") {
+		cl.User, _ = flags.GetString("user")
 	}
-	return s
+	if flags.Changed("key") {
+		cl.PrivateKeyPath, _ = flags.GetString("key")
+	}
+	if flags.Changed("password") {
+		cl.Password, _ = flags.GetString("password")
+	}
+	if flags.Changed("known-hosts") {
+		cl.KnownHostsPath, _ = flags.GetString("known-hosts")
+	}
+	if flags.Changed("ssh-timeout") {
+		cl.CommandTimeout, _ = flags.GetInt("ssh-timeout")
+	}
+	if flags.Changed("probe-timeout") {
+		cl.ProbeTimeout, _ = flags.GetInt("probe-timeout")
+	}
+	return cl
 }

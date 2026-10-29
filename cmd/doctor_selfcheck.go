@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/microyahoo/infra-agent/internal/access"
-	"github.com/microyahoo/infra-agent/internal/ceph/tools"
+	"github.com/microyahoo/infra-agent/internal/session"
 )
-
-// selfCheckResult 记录单个工具的调用结果。
 type selfCheckResult struct {
 	Tool    string
 	OK      bool
@@ -27,9 +25,9 @@ type selfCheckResult struct {
 // 目的是在消耗模型额度之前，先确认「工具能不能真的把集群的数据读出来」。
 // 工具解析失败在 dry-run 阶段看不出来——dry-run 只验证 SSH 与探测——
 // 却会在完整诊断时变成模型拿不到证据。
-func runSelfCheck(ctx context.Context, cluster *access.Cluster) error {
-	runner := &selfCheckRunner{cluster: cluster}
-	registry := tools.DefaultRegistry(runner)
+func runSelfCheck(ctx context.Context, sess *session.Session) error {
+	registry := sess.Registry()
+	cluster := sess.Cluster()
 
 	node := ""
 	if nodes := cluster.Nodes(); len(nodes) > 0 {
@@ -162,20 +160,6 @@ func hasCheck(checks []selfCheck, name string) bool {
 	}
 	return false
 }
-
-// selfCheckRunner 把 Cluster 适配成 tools.Runner。
-type selfCheckRunner struct{ cluster *access.Cluster }
-
-func (r *selfCheckRunner) Run(ctx context.Context, node string, argv []string) (access.Output, error) {
-	return r.cluster.Run(ctx, node, argv)
-}
-func (r *selfCheckRunner) Capabilities(ctx context.Context, node string) access.Capabilities {
-	return r.cluster.Capabilities(ctx, node)
-}
-func (r *selfCheckRunner) Topology(ctx context.Context) (*access.Topology, error) {
-	return r.cluster.Topology(ctx)
-}
-func (r *selfCheckRunner) Nodes() []string { return r.cluster.Nodes() }
 
 // firstOSDs 取前 n 个 OSD 编号，供 slow_ops 这类需要采样参数的工具使用。
 func firstOSDs(topo *access.Topology, n int) []int {

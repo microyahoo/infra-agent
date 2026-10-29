@@ -1,4 +1,4 @@
-package doctor
+package agent
 
 import (
 	"context"
@@ -34,8 +34,8 @@ type Agent struct {
 	maxCallsPerTurn  int
 }
 
-// AgentConfig 是 Agent 的构造参数。
-type AgentConfig struct {
+// Config 是 Agent 的构造参数。
+type Config struct {
 	Model            llm.ChatModel
 	Registry         *tools.Registry
 	SystemPrompt     string
@@ -49,7 +49,7 @@ type AgentConfig struct {
 }
 
 // NewAgent 创建对话式调查助手。
-func NewAgent(cfg AgentConfig) *Agent {
+func NewAgent(cfg Config) *Agent {
 	a := &Agent{
 		model:            cfg.Model,
 		reg:              cfg.Registry,
@@ -165,6 +165,11 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 				continue
 			}
 			callsThisTurn++
+			// read_skill 是内置工具：直接从嵌入的文档读取，不进证据链。
+			if tc.Name == readSkillToolName {
+				a.msgs = append(a.msgs, llm.ToolResultMessage(tc.ID, skillContent(parseArgs(tc.Args))))
+				continue
+			}
 			// 相同工具 + 相同参数已经执行过：不再真的跑一遍，
 			// 直接把"已有结果"告诉模型。这是不重复劳动的结构性保证。
 			if a.chain.SeenCall(tc.Name, parseArgs(tc.Args)) {
@@ -262,10 +267,11 @@ func (a *Agent) toolSpecs() []llm.ToolSpec {
 	if a.reg == nil {
 		return nil
 	}
-	specs := make([]llm.ToolSpec, 0, len(a.reg.Specs()))
+	specs := make([]llm.ToolSpec, 0, len(a.reg.Specs())+1)
 	for _, s := range a.reg.Specs() {
 		specs = append(specs, llm.ToolSpec{Name: s.Name, Description: s.Description, Schema: s.Schema})
 	}
+	specs = append(specs, readSkillSpec())
 	return specs
 }
 

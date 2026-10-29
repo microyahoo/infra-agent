@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor"
+	"github.com/microyahoo/infra-agent/internal/agent"
+	"github.com/microyahoo/infra-agent/internal/config"
+	"github.com/microyahoo/infra-agent/internal/session"
 )
 
 const interactiveBanner = `
@@ -35,13 +37,25 @@ const interactiveHelp = `
 // 助手按需建立：第一次提问时才连接、探测、取拓扑，之后复用同一会话，
 // 模型能看到之前聊过什么、查过什么，因此"能不能更准确一点"这类反馈
 // 会被当成对话的一部分，而不是又一次全新的体检。
-func runInteractive(ctx context.Context, newAgent func(string) (*doctor.Agent, error), apiKey string, needKey bool, opt resolvedDoctorOptions) error {
+func runInteractive(ctx context.Context, cfg config.Config, open func(context.Context) (*agent.Agent, *session.Session, error)) error {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	fmt.Fprint(os.Stderr, interactiveBanner)
 
-	var agent *doctor.Agent
+	type opened struct {
+		agent   *agent.Agent
+		session *session.Session
+	}
+
+	var ag *agent.Agent
+	var sess *session.Session
+	defer func() {
+		if sess != nil {
+			sess.Close()
+		}
+	}()
+
 	for {
 		fmt.Fprint(os.Stderr, "\n❯ ")
 		text, ok := readInput(in)
@@ -59,31 +73,27 @@ func runInteractive(ctx context.Context, newAgent func(string) (*doctor.Agent, e
 			fmt.Fprint(os.Stderr, interactiveHelp)
 			continue
 		case ":evidence":
-			printEvidence(agent)
+			printEvidence(ag)
 			continue
 		}
 
-		if agent == nil {
-			if needKey && apiKey == "" {
-				fmt.Fprintf(os.Stderr, "✗ 未找到 API Key：请设置环境变量 %s，或在配置文件 doctor.llm.api_key 中填写\n", opt.APIKeyEnv)
-				continue
-			}
-			var err error
-			agent, err = withTimeout(ctx, opt.Timeout, func(c context.Context) (*doctor.Agent, error) {
-				return newAgent(apiKey)
+		if ag == nil {
+			r, err := withTimeout(ctx, cfg.Run.Timeout, func(c context.Context) (opened, error) {
+				a, s, err := open(c)
+				return opened{a, s}, err
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "✗ 初始化失败：%v\n", err)
-				agent = nil
 				continue
 			}
+			ag, sess = r.agent, r.session
 		}
 
-		reply, err := withTimeout(ctx, opt.Timeout, func(c context.Context) (string, error) {
-			return agent.Send(c, text)
+		reply, err := withTimeout(ctx, cfg.Run.Timeout, func(c context.Context) (string, error) {
+			return ag.Send(c, text)
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "✗ %s\n", describeError(err, opt.Timeout))
+			fmt.Fprintf(os.Stderr, "✗ %s\n", describeError(err, cfg.Run.Timeout))
 			continue
 		}
 		if strings.TrimSpace(reply) == "" {
@@ -135,7 +145,7 @@ func describeError(err error, seconds int) string {
 }
 
 // printEvidence 打印已执行的查询清单。
-func printEvidence(a *doctor.Agent) {
+func printEvidence(a *agent.Agent) {
 	if a == nil || a.Evidence() == nil || a.Evidence().Len() == 0 {
 		fmt.Fprintln(os.Stderr, "还没有执行过查询")
 		return

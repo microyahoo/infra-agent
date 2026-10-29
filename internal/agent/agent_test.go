@@ -1,4 +1,4 @@
-package doctor
+package agent
 
 import (
 	"context"
@@ -47,7 +47,7 @@ func (s *stubTool) Execute(_ context.Context, _ json.RawMessage) (*tools.Result,
 }
 
 func newAgentForTest(model llm.ChatModel, reg *tools.Registry) *Agent {
-	return NewAgent(AgentConfig{
+	return NewAgent(Config{
 		Model: model, Registry: reg, SystemPrompt: "test",
 		MaxRounds: 5, MaxCallsPerRound: 2, MaxCallsPerTurn: 10,
 	})
@@ -212,7 +212,7 @@ func TestAgentAnswersWhenRoundsExhausted(t *testing.T) {
 func TestAgentPromptIsConversational(t *testing.T) {
 	s := snapshot.Snapshot{ClusterID: "x", Health: "HEALTH_WARN",
 		HealthDetail: "HEALTH_WARN Slow OSD heartbeats (longest 1349ms)"}
-	p := AgentPrompt(s)
+	p := SystemPrompt(s)
 
 	for _, banned := range []string{"submit_conclusion", "## 结论", "## 建议操作", "evidence_refs"} {
 		if strings.Contains(p, banned) {
@@ -220,10 +220,9 @@ func TestAgentPromptIsConversational(t *testing.T) {
 		}
 	}
 	for _, want := range []struct{ key, why string }{
-		{"直接回答", "允许不调工具直接回答"},
-		{"不要重新全面检查", "反馈类输入不应触发重新调查"},
 		{"只读", "只读约束"},
 		{"1349ms", "症状出现在提示词里"},
+		{"ceph-doctor", "SKILL.md 内容已嵌入"},
 	} {
 		if !strings.Contains(p, want.key) {
 			t.Errorf("prompt missing %q (%s)", want.key, want.why)
@@ -237,7 +236,7 @@ func TestAgentPromptCarriesRecentHealthEvents(t *testing.T) {
 		ClusterID: "x", Health: "HEALTH_OK",
 		RecentHealthEvents: "2026-10-27 05:20:11 osd.13 is experiencing slow heartbeats",
 	}
-	p := AgentPrompt(s)
+	p := SystemPrompt(s)
 	if !strings.Contains(p, "osd.13") {
 		t.Error("recent health events should reach the prompt")
 	}
@@ -256,7 +255,7 @@ func TestSnapshotEvidenceIsSeededAndAdvertised(t *testing.T) {
 		HealthDetail: "HEALTH_WARN Slow OSD heartbeats (longest 1349ms)",
 		Evidence:     seed,
 	}
-	p := AgentPrompt(snap)
+	p := SystemPrompt(snap)
 	if !strings.Contains(p, "ev-001") || !strings.Contains(p, "ev-002") {
 		t.Errorf("prompt should list seeded evidence ids:\n%s", p)
 	}
@@ -268,7 +267,7 @@ func TestSnapshotEvidenceIsSeededAndAdvertised(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(st)
 	model := &scriptedModel{replies: []llm.Reply{{Content: "直接回答"}}}
-	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: p, SeedEvidence: seed})
+	a := NewAgent(Config{Model: model, Registry: reg, SystemPrompt: p, SeedEvidence: seed})
 
 	if a.Evidence().Len() != 2 {
 		t.Errorf("seed evidence not registered: %d", a.Evidence().Len())
@@ -308,7 +307,7 @@ func TestAgentSkipsDuplicateCalls(t *testing.T) {
 // 默认每轮只允许一个工具调用：模型必须看到上一次结果才能决定下一步。
 // 允许多个并行调用时，它会在同一轮把想查的都发出去，等于没有"看结果再决定"。
 func TestAgentDefaultOneCallPerRound(t *testing.T) {
-	a := NewAgent(AgentConfig{})
+	a := NewAgent(Config{})
 	if a.maxCallsPerRound != 1 {
 		t.Errorf("default maxCallsPerRound = %d, want 1", a.maxCallsPerRound)
 	}
@@ -332,7 +331,7 @@ func TestAgentDropsExtraCallsInSameRound(t *testing.T) {
 		}},
 		{Content: "done"},
 	}}
-	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 3, MaxCallsPerTurn: 10})
+	a := NewAgent(Config{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 3, MaxCallsPerTurn: 10})
 
 	if _, err := a.Send(context.Background(), "q"); err != nil {
 		t.Fatal(err)
@@ -455,7 +454,7 @@ func TestAgentAutoContinuesWhenMoreInfoNeeded(t *testing.T) {
 		},
 		specs: &specCounts,
 	}
-	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 5, MaxCallsPerTurn: 10})
+	a := NewAgent(Config{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 5, MaxCallsPerTurn: 10})
 
 	reply, err := a.Send(context.Background(), "集群为啥 warn")
 	if err != nil {
@@ -471,8 +470,8 @@ func TestAgentAutoContinuesWhenMoreInfoNeeded(t *testing.T) {
 	if specCounts[0] != 1 {
 		t.Errorf("first round specs = %d, want 1", specCounts[0])
 	}
-	if specCounts[1] != 3 {
-		t.Errorf("after need_more_info the full toolset (3 tools) should be available, got %d", specCounts[1])
+	if specCounts[1] != 4 {
+		t.Errorf("after need_more_info the full toolset (3 tools + read_skill) should be available, got %d", specCounts[1])
 	}
 	// need_more_info 本身不产生证据
 	if a.Evidence().Len() != 1 {
@@ -491,7 +490,7 @@ func TestAgentStopsWhenAnswerIsEnough(t *testing.T) {
 		script: []llm.Reply{{Content: "结论：一切正常。"}},
 		specs:  &specCounts,
 	}
-	a := NewAgent(AgentConfig{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 5})
+	a := NewAgent(Config{Model: model, Registry: reg, SystemPrompt: "s", MaxRounds: 5})
 
 	if _, err := a.Send(context.Background(), "集群怎么样"); err != nil {
 		t.Fatal(err)

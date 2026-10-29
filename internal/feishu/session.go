@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/agent"
+	"github.com/microyahoo/infra-agent/internal/config"
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
-	"github.com/microyahoo/infra-agent/pkg/doctor"
+	"github.com/microyahoo/infra-agent/internal/session"
 )
 
 // ClusterConfig 描述机器人可以访问的一套存储集群。
@@ -33,8 +34,8 @@ type SessionManager struct {
 }
 
 type sessionEntry struct {
-	agent     *doctor.Agent
-	cluster   *access.Cluster
+	agent     *agent.Agent
+	sess      *session.Session
 	clusterID string
 	lastUsed  time.Time
 	mu        sync.Mutex // 同一个群串行处理，避免两条消息交叉
@@ -59,41 +60,40 @@ func (m *SessionManager) get(ctx context.Context, chatID, clusterName string) (*
 		return nil, fmt.Errorf("没有名为 %q 的集群配置", clusterName)
 	}
 
-	cluster, err := access.Dial(ctx, access.Config{
+	cl := config.Cluster{
 		Host:           cc.Host,
 		Port:           cc.Port,
 		User:           cc.User,
 		PrivateKeyPath: cc.PrivateKeyPath,
 		Password:       cc.Password,
 		KnownHostsPath: cc.KnownHostsPath,
+	}
+
+	sess, err := session.Open(ctx, session.Options{
+		Cluster:         cl,
+		CollectSnapshot: true,
+		SourceDir:       m.cfg.SourceDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("接入集群 %s 失败: %w", cc.Name, err)
 	}
 
-	agent, _, err := doctor.Open(ctx, doctor.OpenConfig{
-		Cluster:          cluster,
-		Model:            m.cfg.newModel(),
-		SourceDir:        m.cfg.SourceDir,
+	ag := sess.NewAgent(m.cfg.newModel(), config.Loop{
 		MaxRounds:        m.cfg.MaxRounds,
 		MaxCallsPerRound: m.cfg.MaxCallsPerRound,
-		MaxCallsPerTurn:  m.cfg.MaxCallsPerTurn,
+		MaxToolCalls:     m.cfg.MaxCallsPerTurn,
 	})
-	if err != nil {
-		cluster.Close()
-		return nil, err
-	}
 
-	e := &sessionEntry{agent: agent, cluster: cluster, clusterID: clusterName, lastUsed: time.Now()}
+	e := &sessionEntry{agent: ag, sess: sess, clusterID: clusterName, lastUsed: time.Now()}
 	m.mu.Lock()
 	// 若同名会话在并发时已被建好，保留先建的那个
 	if old, ok := m.entries[chatID]; ok && old.clusterID == clusterName {
 		m.mu.Unlock()
-		cluster.Close()
+		sess.Close()
 		return old, nil
 	}
 	if old, ok := m.entries[chatID]; ok {
-		old.cluster.Close()
+		old.sess.Close()
 	}
 	m.entries[chatID] = e
 	m.mu.Unlock()
@@ -116,7 +116,7 @@ func (m *SessionManager) cleanupIdle(idle time.Duration) {
 	}
 	m.mu.Unlock()
 	for _, e := range dead {
-		e.cluster.Close()
+		e.sess.Close()
 	}
 }
 
@@ -130,7 +130,7 @@ func (m *SessionManager) Close() {
 	m.entries = map[string]*sessionEntry{}
 	m.mu.Unlock()
 	for _, e := range all {
-		e.cluster.Close()
+		e.sess.Close()
 	}
 }
 
