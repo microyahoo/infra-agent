@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	ceph "github.com/microyahoo/infra-agent/internal/ceph"
 )
 
 const statusJSON = `{
@@ -37,7 +39,7 @@ func TestCephStatusParsesHealth(t *testing.T) {
 	if !strings.Contains(res.Summary, "HEALTH_WARN") {
 		t.Errorf("summary should mention health: %q", res.Summary)
 	}
-	d := res.Data.(*CephStatusData)
+	d := res.Data.(*ceph.Status)
 	if d.Health != "HEALTH_WARN" {
 		t.Errorf("health = %q", d.Health)
 	}
@@ -116,8 +118,8 @@ func TestFormatPercentAvoidsMisleadingZero(t *testing.T) {
 		62.5:   "62.5%",
 	}
 	for in, want := range cases {
-		if got := formatPercent(in); got != want {
-			t.Errorf("formatPercent(%v) = %q, want %q", in, got, want)
+		if got := ceph.FormatPercent(in); got != want {
+			t.Errorf("FormatPercent(%v) = %q, want %q", in, got, want)
 		}
 	}
 }

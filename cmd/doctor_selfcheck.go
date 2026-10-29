@@ -46,6 +46,7 @@ func runSelfCheck(ctx context.Context, cluster *access.Cluster) error {
 	fmt.Fprintf(os.Stderr, "🧪 在真实集群上逐个验证工具 ...\n\n")
 
 	checks := []selfCheck{
+		{"ceph_overview", nil},
 		{"ceph_status", nil},
 		{"ceph_health", nil},
 		{"rook_pods", map[string]any{}},

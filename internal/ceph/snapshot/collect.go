@@ -1,14 +1,12 @@
-package doctor
+package snapshot
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/microyahoo/infra-agent/internal/access"
+	ceph "github.com/microyahoo/infra-agent/internal/ceph"
 	"github.com/microyahoo/infra-agent/internal/evidence"
 )
 
@@ -21,9 +19,6 @@ var collectHealthArgv = []string{"ceph", "health", "detail"}
 // collectRecentLogArgv 读取最近的集群日志，用于找间歇性告警。
 var collectRecentLogArgv = []string{"ceph", "log", "last", "500"}
 
-// maxHealthDetailLines 限制告警明细进入提示词的行数。
-const maxHealthDetailLines = 40
-
 // Collector 提供快照采集所需的集群访问能力。
 type Collector interface {
 	Run(ctx context.Context, node string, argv []string) (access.Output, error)
@@ -32,8 +27,8 @@ type Collector interface {
 	Nodes() []string
 }
 
-// CollectSnapshotFrom 是采集快照的通用版本，便于测试。
-func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
+// Collect 是采集快照的通用版本，便于测试。
+func Collect(ctx context.Context, c Collector) (Snapshot, error) {
 	var s Snapshot
 
 	nodes := c.Nodes()
@@ -66,17 +61,17 @@ func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 		assignEvidenceIDs(&s)
 		return s, nil
 	}
-	st, perr := parseSnapshotStatus(out.Stdout)
+	st, perr := ceph.ParseStatus(out.Stdout)
 	if perr != nil {
 		s.Health = "unknown"
 		s.Failures = append(s.Failures, fmt.Sprintf("解析 ceph status 失败：%v", perr))
 		assignEvidenceIDs(&s)
 		return s, nil
 	}
-	s.Health = st.health
-	s.Summary = st.summary
-	if st.fsid != "" {
-		s.ClusterID = st.fsid
+	s.Health = st.Health
+	s.Summary = st.Summary()
+	if st.FSID != "" {
+		s.ClusterID = st.FSID
 	}
 
 	// 始终取一次健康明细：慢心跳这类告警是间歇性的，采样瞬间可能已经恢复。
@@ -149,6 +144,15 @@ func summarizeOutput(s string) string {
 	return truncateLines(s, 6)
 }
 
+// truncateLines 取前 n 行。
+func truncateLines(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) <= n {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:n], "\n")
+}
+
 // recentHealthEvents 从最近的集群日志里筛出健康变更行。
 func recentHealthEvents(ctx context.Context, c Collector, node string) string {
 	out, err := c.Run(ctx, node, collectRecentLogArgv)
@@ -200,176 +204,4 @@ type Snapshot struct {
 	// 交给 Agent 预置进证据链，模型就能直接引用这些数据，
 	// 而不必为了拿到 evidence_id 再执行一遍同样的命令。
 	Evidence []evidence.Evidence
-}
-
-// statusView 是从 ceph status 提取的关键字段。
-type statusView struct {
-	fsid    string
-	health  string
-	summary string
-}
-
-type rawSnapshotStatus struct {
-	FSID   string `json:"fsid"`
-	Health struct {
-		Status string `json:"status"`
-	} `json:"health"`
-	Monmap struct {
-		NumMons int `json:"num_mons"`
-	} `json:"monmap"`
-	OSDMap struct {
-		NumOSDs   int `json:"num_osds"`
-		NumUpOSDs int `json:"num_up_osds"`
-		NumInOSDs int `json:"num_in_osds"`
-	} `json:"osdmap"`
-	PGMap struct {
-		NumPGs     int `json:"num_pgs"`
-		PGsByState []struct {
-			StateName string `json:"state_name"`
-			Count     int    `json:"count"`
-		} `json:"pgs_by_state"`
-		BytesTotal uint64 `json:"bytes_total"`
-		BytesUsed  uint64 `json:"bytes_used"`
-	} `json:"pgmap"`
-}
-
-// parseSnapshotStatus 从 ceph status JSON 提取健康状态与概要。
-func parseSnapshotStatus(raw string) (statusView, error) {
-	var rs rawSnapshotStatus
-	if err := json.Unmarshal([]byte(raw), &rs); err != nil {
-		return statusView{}, err
-	}
-	degraded := 0
-	for _, s := range rs.PGMap.PGsByState {
-		if s.StateName != "active+clean" {
-			degraded += s.Count
-		}
-	}
-	var used float64
-	if rs.PGMap.BytesTotal > 0 {
-		used = float64(rs.PGMap.BytesUsed) / float64(rs.PGMap.BytesTotal) * 100
-	}
-	return statusView{
-		fsid:   strings.TrimSpace(rs.FSID),
-		health: strings.TrimSpace(rs.Health.Status),
-		summary: fmt.Sprintf("mon %d，OSD %d 总/%d up/%d in，PG %d（异常 %d），容量 %s",
-			rs.Monmap.NumMons, rs.OSDMap.NumOSDs, rs.OSDMap.NumUpOSDs, rs.OSDMap.NumInOSDs,
-			rs.PGMap.NumPGs, degraded, formatPercent(used)),
-	}, nil
-}
-
-// truncateLines 取前 n 行。
-func truncateLines(s string, n int) string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
-	if len(lines) <= n {
-		return strings.Join(lines, "\n")
-	}
-	return strings.Join(lines[:n], "\n")
-}
-
-// formatPercent 按数值大小选择有效位数：大容量集群早期使用率极低，
-// 固定 %.1f 会显示成 0.0%，看起来像数据缺失。
-func formatPercent(p float64) string {
-	switch {
-	case p == 0:
-		return "0%"
-	case p < 0.01:
-		return fmt.Sprintf("%.4f%%", p)
-	case p < 1:
-		return fmt.Sprintf("%.2f%%", p)
-	}
-	return fmt.Sprintf("%.1f%%", p)
-}
-
-// collectPodHealth 采集 Rook 命名空间的 pod 健康摘要。
-//
-// 与 rook_pods 工具用同一条 jsonpath：只取需要的字段，
-// 避免 -o json 在本集群产生 13 万行输出。
-func collectPodHealth(ctx context.Context, c Collector, entry string) string {
-	caps := c.Capabilities(ctx, entry)
-	if !caps.Kubectl {
-		return ""
-	}
-	ns := caps.Namespace()
-	argv := []string{"kubectl", "-n", ns, "get", "pods", "-o",
-		"jsonpath={range .items[*]}{.metadata.name}{\"\\t\"}{.spec.nodeName}{\"\\t\"}{.status.phase}{\"\\t\"}" +
-			"{.status.containerStatuses[*].ready}{\"\\t\"}{.status.containerStatuses[*].restartCount}{\"\\t\"}" +
-			"{.status.containerStatuses[*].state.waiting.reason}{\"\\n\"}{end}"}
-	out, err := c.Run(ctx, entry, argv)
-	if err != nil {
-		return ""
-	}
-	return summarizePods(out.Stdout)
-}
-
-// summarizePods 从 pod 列表输出里挑出异常项，形成一小段摘要。
-func summarizePods(table string) string {
-	type row struct {
-		name     string
-		node     string
-		phase    string
-		notReady bool
-		restarts int
-		waiting  string
-	}
-	var rows []row
-	total := 0
-	for _, line := range strings.Split(table, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		f := strings.Split(line, "\t")
-		if len(f) < 3 {
-			continue
-		}
-		total++
-		r := row{name: f[0], node: f[1], phase: f[2]}
-		if len(f) > 3 {
-			for _, v := range strings.Fields(f[3]) {
-				if v == "false" {
-					r.notReady = true
-				}
-			}
-		}
-		if len(f) > 4 {
-			for _, v := range strings.Fields(f[4]) {
-				if n, err := strconv.Atoi(v); err == nil {
-					r.restarts += n
-				}
-			}
-		}
-		if len(f) > 5 {
-			for _, v := range strings.Fields(f[5]) {
-				if v != "" {
-					r.waiting = v
-					break
-				}
-			}
-		}
-		if r.notReady || r.waiting != "" || r.restarts >= 3 {
-			rows = append(rows, r)
-		}
-	}
-	if total == 0 {
-		return ""
-	}
-	if len(rows) == 0 {
-		return fmt.Sprintf("%s 下 %d 个 pod 全部就绪，无异常重启", "rook-ceph", total)
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].restarts > rows[j].restarts })
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d 个 pod 中 %d 个异常：\n", total, len(rows))
-	for i, r := range rows {
-		if i >= 8 {
-			b.WriteString("…\n")
-			break
-		}
-		fmt.Fprintf(&b, "- %s @%s：%s，重启 %d 次", r.name, r.node, orDash(r.phase), r.restarts)
-		if r.waiting != "" {
-			fmt.Fprintf(&b, "，%s", r.waiting)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
 }

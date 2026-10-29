@@ -5,13 +5,14 @@ import (
 	"strings"
 
 	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/ceph/snapshot"
 )
 
 // AgentPrompt 构造对话式调查助手的系统提示词。
 //
 // 与旧版本的区别：不再规定"必须提交结构化结论"，也不要求每轮都产出报告。
 // 它只交代环境事实和对话原则，怎么查、查多深由模型按用户的话决定。
-func AgentPrompt(s Snapshot) string {
+func AgentPrompt(s snapshot.Snapshot) string {
 	var b strings.Builder
 
 	b.WriteString(`你是这套 Ceph 集群的运维助手。你通过只读工具访问集群，和用户对话。
@@ -89,7 +90,7 @@ func AgentPrompt(s Snapshot) string {
 	// 把结论涉及到的 OSD 直接映射到节点与磁盘。
 	// 这一步本该由框架做：拓扑已经在手里，让模型逐个 osd_detail 纯属浪费往返。
 	if s.Topology != nil {
-		ids := referencedOSDs(s, 24)
+		ids := snapshot.ReferencedOSDs(s, 24)
 		if len(ids) > 0 {
 			place := map[int]access.OSDPlacement{}
 			for _, p := range s.Topology.OSDs {
@@ -158,4 +159,13 @@ func orDash(s string) string {
 		return "未知"
 	}
 	return s
+}
+
+// truncateLines 取前 n 行。
+func truncateLines(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) <= n {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:n], "\n")
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/microyahoo/infra-agent/internal/access"
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/internal/ceph/snapshot"
 	"github.com/microyahoo/infra-agent/internal/ceph/tools"
 )
 
@@ -22,10 +23,10 @@ type OpenConfig struct {
 // Open 采集初始信息并构造一个可对话的调查助手。
 //
 // CLI 与飞书机器人都走这里，避免两处各写一遍"快照 + 工具注册 + 提示词"。
-func Open(ctx context.Context, cfg OpenConfig) (*Agent, Snapshot, error) {
+func Open(ctx context.Context, cfg OpenConfig) (*Agent, snapshot.Snapshot, error) {
 	runner := ClusterRunner{Cluster: cfg.Cluster}
 
-	snap, err := CollectSnapshotFrom(ctx, runner)
+	snap, err := snapshot.Collect(ctx, runner)
 	if err != nil {
 		return nil, snap, err
 	}

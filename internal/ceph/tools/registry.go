@@ -111,6 +111,7 @@ func All(r Runner, srcDir string) []Tool {
 	return []Tool{
 		NewCephStatus(r),
 		NewCephHealth(r),
+		NewOverview(r),
 		NewOSDTree(r),
 		NewPoolInfo(r),
 		NewPGDetail(r),
@@ -128,7 +129,7 @@ func All(r Runner, srcDir string) []Tool {
 	}
 }
 
-// DefaultRegistry 构建全部 12 个工具。
+// DefaultRegistry 构建全部 17 个工具。
 func DefaultRegistry(r Runner) *Registry {
 	return RegistryFrom(All(r, ""))
 }

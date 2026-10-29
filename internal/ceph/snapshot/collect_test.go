@@ -1,4 +1,4 @@
-package doctor
+package snapshot
 
 import (
 	"context"
@@ -50,8 +50,8 @@ func newFakeCollector() *fakeCollector {
 }
 
 // 采集必须产出带编号的证据，否则模型只能重跑命令来换 ID。
-func TestCollectSnapshotProducesNumberedEvidence(t *testing.T) {
-	snap, err := CollectSnapshotFrom(context.Background(), newFakeCollector())
+func TestCollectProducesNumberedEvidence(t *testing.T) {
+	snap, err := Collect(context.Background(), newFakeCollector())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,26 +61,15 @@ func TestCollectSnapshotProducesNumberedEvidence(t *testing.T) {
 	if snap.Evidence[0].ID != "ev-001" || snap.Evidence[1].ID != "ev-002" {
 		t.Errorf("ids = %q/%q", snap.Evidence[0].ID, snap.Evidence[1].ID)
 	}
-	// 提示词里要能看到这些编号
-	p := AgentPrompt(snap)
-	for _, id := range []string{"ev-001", "ev-002"} {
-		if !strings.Contains(p, id) {
-			t.Errorf("prompt missing seeded evidence %s", id)
-		}
-	}
-	// 告警明细要在提示词里
-	if !strings.Contains(p, "1349.426ms") {
-		t.Error("health detail missing from prompt")
-	}
 }
 
 // 健康但用户可能报告过异常：日志里的历史告警要进提示词。
-func TestCollectSnapshotFindsHistoricalWarnings(t *testing.T) {
+func TestCollectFindsHistoricalWarnings(t *testing.T) {
 	fc := newFakeCollector()
 	fc.outputs["ceph status -f json"] = access.Output{Stdout: `{"fsid":"fsid-1","health":{"status":"HEALTH_OK"},
       "monmap":{"num_mons":3},"osdmap":{"num_osds":1,"num_up_osds":1,"num_in_osds":1},
       "pgmap":{"num_pgs":10,"pgs_by_state":[],"bytes_total":100,"bytes_used":1}}`}
-	snap, err := CollectSnapshotFrom(context.Background(), fc)
+	snap, err := Collect(context.Background(), fc)
 	if err != nil {
 		t.Fatal(err)
 	}

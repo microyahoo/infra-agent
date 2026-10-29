@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/internal/ceph/snapshot"
 	"github.com/microyahoo/infra-agent/internal/ceph/tools"
 	"github.com/microyahoo/infra-agent/internal/evidence"
 )
@@ -209,7 +210,7 @@ func TestAgentAnswersWhenRoundsExhausted(t *testing.T) {
 
 // 提示词不能要求模型每轮产出结构化报告，也不能强制它调工具。
 func TestAgentPromptIsConversational(t *testing.T) {
-	s := Snapshot{ClusterID: "x", Health: "HEALTH_WARN",
+	s := snapshot.Snapshot{ClusterID: "x", Health: "HEALTH_WARN",
 		HealthDetail: "HEALTH_WARN Slow OSD heartbeats (longest 1349ms)"}
 	p := AgentPrompt(s)
 
@@ -232,7 +233,7 @@ func TestAgentPromptIsConversational(t *testing.T) {
 
 // 健康但用户可能报告过异常时，最近的告警历史要进提示词。
 func TestAgentPromptCarriesRecentHealthEvents(t *testing.T) {
-	s := Snapshot{
+	s := snapshot.Snapshot{
 		ClusterID: "x", Health: "HEALTH_OK",
 		RecentHealthEvents: "2026-10-27 05:20:11 osd.13 is experiencing slow heartbeats",
 	}
@@ -250,7 +251,7 @@ func TestSnapshotEvidenceIsSeededAndAdvertised(t *testing.T) {
 		{ID: "ev-001", Tool: "snapshot:ceph_status", Command: "ceph status -f json", Summary: "HEALTH_WARN"},
 		{ID: "ev-002", Tool: "snapshot:ceph_health", Command: "ceph health detail", Summary: "Slow OSD heartbeats"},
 	}
-	snap := Snapshot{
+	snap := snapshot.Snapshot{
 		ClusterID: "x", Health: "HEALTH_WARN",
 		HealthDetail: "HEALTH_WARN Slow OSD heartbeats (longest 1349ms)",
 		Evidence:     seed,

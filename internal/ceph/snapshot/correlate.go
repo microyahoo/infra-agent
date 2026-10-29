@@ -1,4 +1,4 @@
-package doctor
+package snapshot
 
 import (
 	"fmt"
@@ -15,11 +15,11 @@ import (
 // 确定性的关联放在代码里做，模型负责验证和解释。
 type Finding struct {
 	// Summary 是一句话结论。
-	Summary string
+	Summary string `json:"summary"`
 	// Why 说明依据。
-	Why string
+	Why string `json:"why"`
 	// Next 是建议的下一步验证。
-	Next string
+	Next string `json:"next"`
 }
 
 // 匹配 health detail 里的各类条目。
@@ -188,10 +188,10 @@ func prefixOSD(ids []string) []string {
 
 var reOSDRef = regexp.MustCompile(`osd\.(\d+)`)
 
-// referencedOSDs 收集告警与结论里提到的 OSD 编号。
+// ReferencedOSDs 收集告警与结论里提到的 OSD 编号。
 // 用于把"这些 OSD 在哪台机器、哪块盘"直接查出来写进提示词，
 // 省掉模型逐个 osd_detail 的往返。
-func referencedOSDs(s Snapshot, limit int) []int {
+func ReferencedOSDs(s Snapshot, limit int) []int {
 	seen := map[int]bool{}
 	var out []int
 	add := func(idStr string) {
