@@ -45,6 +45,14 @@ func TestOverviewReportsFindingsAndPlacement(t *testing.T) {
 	if data.OSDPlacement[0].Node != "node-3" {
 		t.Errorf("placement node: %+v", data.OSDPlacement[0])
 	}
+	if len(res.Evidence) == 0 {
+		t.Fatal("overview should propagate the snapshot's evidence")
+	}
+	for _, e := range res.Evidence {
+		if e.ID != "" {
+			t.Errorf("evidence IDs must be stripped before entering the chain: %q", e.ID)
+		}
+	}
 }
 
 func TestOverviewIncludesPodHealthWhenKubectlExists(t *testing.T) {

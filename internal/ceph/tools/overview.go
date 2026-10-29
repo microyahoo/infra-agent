@@ -7,6 +7,7 @@ import (
 
 	"github.com/microyahoo/infra-agent/internal/access"
 	"github.com/microyahoo/infra-agent/internal/ceph/snapshot"
+	"github.com/microyahoo/infra-agent/internal/evidence"
 )
 
 type overviewTool struct{ r Runner }
@@ -88,5 +89,17 @@ func (t *overviewTool) Execute(ctx context.Context, _ json.RawMessage) (*Result,
 	if len(snap.Failures) > 0 {
 		res.Hints = append(res.Hints, fmt.Sprintf("会话起点有 %d 项没采到：%s", len(snap.Failures), snap.Failures[0]))
 	}
+	res.Evidence = withoutIDs(snap.Evidence)
 	return res, nil, nil
+}
+
+// withoutIDs 去掉快照预分配的编号，交给证据链重新编号，
+// 避免与本会话已存在的 ev-NNN 撞号。
+func withoutIDs(in []evidence.Evidence) []evidence.Evidence {
+	out := make([]evidence.Evidence, len(in))
+	copy(out, in)
+	for i := range out {
+		out[i].ID = ""
+	}
+	return out
 }

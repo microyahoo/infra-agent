@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/evidence"
 )
 
 // Runner 是工具层对集群的全部依赖。
@@ -23,6 +24,9 @@ type Result struct {
 	Summary string   `json:"summary"`         // 一句话结论
 	Data    any      `json:"data,omitempty"`  // 结构化细节
 	Hints   []string `json:"hints,omitempty"` // 下一步可执行的查询
+	// Evidence 是复合工具（例如 ceph_overview）额外产生的证据。
+	// agent 会把它们逐条写入证据链并回填 ID；MCP 客户端忽略该字段。
+	Evidence []evidence.Evidence `json:"-"`
 }
 
 // Raw 是工具留下的一手材料，由 loop 写入证据链。

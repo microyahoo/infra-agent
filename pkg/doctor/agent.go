@@ -234,6 +234,15 @@ func (a *Agent) runTool(ctx context.Context, tc llm.ToolCall) string {
 		if len(res.Hints) > 0 {
 			payload["facts"] = res.Hints
 		}
+		if len(res.Evidence) > 0 {
+			ids := make([]map[string]string, 0, len(res.Evidence))
+			for _, e := range res.Evidence {
+				e.ID = ""
+				added := a.chain.Add(e)
+				ids = append(ids, map[string]string{"tool": added.Tool, "evidence_id": added.ID})
+			}
+			payload["evidence"] = ids
+		}
 	}
 	out := mustJSON(payload)
 	if len(out) > maxToolResultChars {
