@@ -8,21 +8,15 @@ import (
 	"github.com/spf13/viper"
 )
 
-var (
-	cfgFile    string
-	namespace  string
-	kubeconfig string
-)
+var cfgFile string
 
 // rootCmd represents the base command
 var rootCmd = &cobra.Command{
 	Use:   "infra-agent",
 	Short: "智能基础设施运维 Agent",
-	Long: `Infra Agent 是一个综合性的基础设施智能运维工具，
-专为 Kubernetes 环境下的计算和存储服务器设计。
+	Long: `Infra Agent 通过 SSH 只读访问 Ceph 集群，提供对话式诊断。
 
-它提供了智能分析、自动巡检、问题诊断和告警通知等功能，
-帮助 SRE 团队快速定位和解决基础设施问题。`,
+可作为命令行工具、MCP server 或飞书机器人运行。`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -35,8 +29,6 @@ func init() {
 
 	// 全局标志
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "配置文件路径 (默认: $HOME/.infra-agent.yaml)")
-	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "Kubernetes 命名空间 (为空则所有命名空间)")
-	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig 文件路径 (默认: $HOME/.kube/config)")
 }
 
 // initConfig 读取配置文件和环境变量

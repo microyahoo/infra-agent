@@ -77,10 +77,6 @@ docker-push:
 	docker push microyahoo/$(BINARY_NAME):$(VERSION)
 	docker push microyahoo/$(BINARY_NAME):latest
 
-# 运行
-run:
-	go run . analyze --explain
-
 # 帮助信息
 help:
 	@echo "Available targets:"
@@ -95,36 +91,3 @@ help:
 	@echo "  deps         - Update dependencies"
 	@echo "  docker-build - Build Docker image"
 	@echo "  docker-push  - Push Docker image"
-	@echo "  run          - Run the application"
-.PHONY: test-basic test-analyze test-all
-
-# 基础测试
-test-basic:
-	@echo "运行基础测试..."
-	go test -v ./pkg/common/...
-	go test -v ./pkg/analyzer/...
-
-# 分析器测试
-test-analyze:
-	@echo "测试分析器功能..."
-	./test.sh
-
-# 运行所有测试
-test-all: test-basic test-analyze
-	@echo "所有测试完成！"
-
-.PHONY: demo
-demo:
-	@echo "======================================"
-	@echo "Infra Agent 演示"
-	@echo "======================================"
-	@./bin/infra-agent version
-	@echo ""
-	@echo "配置示例："
-	@echo "  export OPENAI_API_KEY='sk-...'"
-	@echo "  export FEISHU_WEBHOOK_URL='https://...'"
-	@echo ""
-	@echo "使用示例："
-	@echo "  ./bin/infra-agent analyze --explain"
-	@echo "  ./bin/infra-agent analyze --explain --auto-diagnose --notify"
-	@echo "  ./bin/infra-agent patrol start --interval 30m"
