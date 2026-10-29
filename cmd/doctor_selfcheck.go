@@ -12,6 +12,7 @@ import (
 	"github.com/microyahoo/infra-agent/internal/access"
 	"github.com/microyahoo/infra-agent/internal/session"
 )
+
 type selfCheckResult struct {
 	Tool    string
 	OK      bool

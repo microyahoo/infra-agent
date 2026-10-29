@@ -46,9 +46,9 @@ type Config struct {
 	LLM      LLMConfig
 	NewModel func() llm.ChatModel // 测试注入
 
-	Policy    config.Policy
-	SourceDir string
-	Loop      config.Loop
+	Policy      config.Policy
+	SourceDir   string
+	Loop        config.Loop
 	IdleTimeout time.Duration
 }
 
