@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
-	"github.com/microyahoo/infra-agent/pkg/doctor/loop"
+	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/evidence"
 )
 
 // collectStatusArgv 是会话开始时读取集群状态的命令。
@@ -32,15 +32,7 @@ type Collector interface {
 	Nodes() []string
 }
 
-// CollectSnapshot 采集会话开始时需要的全部背景信息。
-//
-// 只做一次，之后由 Agent 复用。采集失败不阻断：缺什么写进 Failures，
-// 交给模型在对话中自行补查。
-func CollectSnapshot(ctx context.Context, c *access.Cluster, _ string) (Snapshot, error) {
-	return CollectSnapshotFrom(ctx, snapshotCollector{c})
-}
-
-// CollectSnapshotFrom 是 CollectSnapshot 的通用版本，便于测试。
+// CollectSnapshotFrom 是采集快照的通用版本，便于测试。
 func CollectSnapshotFrom(ctx context.Context, c Collector) (Snapshot, error) {
 	var s Snapshot
 
@@ -128,8 +120,8 @@ func assignEvidenceIDs(s *Snapshot) {
 }
 
 // evidenceFrom 把一次采集结果包装成证据。
-func evidenceFrom(c Collector, node string, argv []string, out access.Output, err error, tool string) loop.Evidence {
-	ev := loop.Evidence{
+func evidenceFrom(c Collector, node string, argv []string, out access.Output, err error, tool string) evidence.Evidence {
+	ev := evidence.Evidence{
 		Tool:      tool,
 		Node:      node,
 		Command:   access.BuildCommand(argv),
@@ -181,20 +173,6 @@ func recentHealthEvents(ctx context.Context, c Collector, node string) string {
 	return strings.Join(lines, "\n")
 }
 
-// snapshotCollector 把 access.Cluster 适配为 Collector。
-type snapshotCollector struct{ c *access.Cluster }
-
-func (r snapshotCollector) Run(ctx context.Context, node string, argv []string) (access.Output, error) {
-	return r.c.Run(ctx, node, argv)
-}
-func (r snapshotCollector) Capabilities(ctx context.Context, node string) access.Capabilities {
-	return r.c.Capabilities(ctx, node)
-}
-func (r snapshotCollector) Topology(ctx context.Context) (*access.Topology, error) {
-	return r.c.Topology(ctx)
-}
-func (r snapshotCollector) Nodes() []string { return r.c.Nodes() }
-
 // Snapshot 是会话开始时采集的集群背景信息。
 type Snapshot struct {
 	ClusterID string
@@ -221,7 +199,7 @@ type Snapshot struct {
 	// Evidence 是采集阶段产生的证据。
 	// 交给 Agent 预置进证据链，模型就能直接引用这些数据，
 	// 而不必为了拿到 evidence_id 再执行一遍同样的命令。
-	Evidence []loop.Evidence
+	Evidence []evidence.Evidence
 }
 
 // statusView 是从 ceph status 提取的关键字段。

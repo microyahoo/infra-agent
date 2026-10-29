@@ -4,9 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/internal/access"
 )
 
 // fakeCollector 用预置响应模拟集群。
@@ -89,5 +88,3 @@ func TestCollectSnapshotFindsHistoricalWarnings(t *testing.T) {
 		t.Errorf("recent events = %q", snap.RecentHealthEvents)
 	}
 }
-
-var _ = time.Second

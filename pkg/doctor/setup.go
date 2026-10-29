@@ -3,9 +3,9 @@ package doctor
 import (
 	"context"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
-	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
-	"github.com/microyahoo/infra-agent/pkg/doctor/tools"
+	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/internal/ceph/tools"
 )
 
 // OpenConfig 建立一个诊断会话所需的全部参数。

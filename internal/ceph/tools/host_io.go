@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/internal/access"
 )
 
 // iostat 利用率阈值：达到该值视为磁盘打满。

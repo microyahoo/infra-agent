@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/internal/access"
 )
 
 // AgentPrompt 构造对话式调查助手的系统提示词。
@@ -159,5 +159,3 @@ func orDash(s string) string {
 	}
 	return s
 }
-
-var _ = access.Capabilities{}

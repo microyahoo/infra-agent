@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/internal/access"
 )
 
 // Runner 是工具层对集群的全部依赖。

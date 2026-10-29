@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
-	"github.com/microyahoo/infra-agent/pkg/doctor/loop"
-	"github.com/microyahoo/infra-agent/pkg/doctor/tools"
+	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/internal/evidence"
+	"github.com/microyahoo/infra-agent/internal/ceph/tools"
 )
 
 // Agent 是一个对话式的集群调查助手。
@@ -24,7 +24,7 @@ import (
 type Agent struct {
 	model   llm.ChatModel
 	reg     *tools.Registry
-	chain   *loop.Chain
+	chain   *evidence.Chain
 	msgs    []llm.Message
 	onEvent func(string)
 
@@ -45,7 +45,7 @@ type AgentConfig struct {
 	MaxCallsPerTurn  int
 	// SeedEvidence 是会话开始前已经采集到的证据（快照）。
 	// 预置进证据链后，模型可以直接引用，不必重跑同样的命令来换取 evidence_id。
-	SeedEvidence []loop.Evidence
+	SeedEvidence []evidence.Evidence
 }
 
 // NewAgent 创建对话式调查助手。
@@ -53,7 +53,7 @@ func NewAgent(cfg AgentConfig) *Agent {
 	a := &Agent{
 		model:            cfg.Model,
 		reg:              cfg.Registry,
-		chain:            loop.NewChain(),
+		chain:            evidence.NewChain(),
 		onEvent:          cfg.OnEvent,
 		maxRounds:        cfg.MaxRounds,
 		maxCallsPerRound: cfg.MaxCallsPerRound,
@@ -108,7 +108,6 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 		specs = []llm.ToolSpec{needMoreInfoSpec()}
 	}
 
-	turnStart := a.chain.Len()
 	rounds := 0
 	callsThisTurn := 0
 
@@ -190,14 +189,13 @@ func (a *Agent) Send(ctx context.Context, text string) (string, error) {
 		return "", fmt.Errorf("调用模型失败: %w", err)
 	}
 	a.msgs = append(a.msgs, llm.Message{Role: llm.RoleAssistant, Content: reply.Content})
-	_ = turnStart
 	return strings.TrimSpace(reply.Content), nil
 }
 
 // runTool 执行一次工具调用并写入证据链，返回给模型的结果文本。
 func (a *Agent) runTool(ctx context.Context, tc llm.ToolCall) string {
 	args := parseArgs(tc.Args)
-	ev := loop.Evidence{Tool: tc.Name, Args: args}
+	ev := evidence.Evidence{Tool: tc.Name, Args: args}
 
 	if !a.reg.Has(tc.Name) {
 		ev.ErrorKind = "failed"
@@ -245,7 +243,7 @@ func (a *Agent) runTool(ctx context.Context, tc llm.ToolCall) string {
 }
 
 // Evidence 返回当前证据链。
-func (a *Agent) Evidence() *loop.Chain { return a.chain }
+func (a *Agent) Evidence() *evidence.Chain { return a.chain }
 
 // ToolCalls 返回已执行的工具调用总数。
 func (a *Agent) ToolCalls() int { return a.chain.Len() }

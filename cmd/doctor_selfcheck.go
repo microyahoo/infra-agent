@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
-	"github.com/microyahoo/infra-agent/pkg/doctor/tools"
+	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/ceph/tools"
 )
 
 // selfCheckResult 记录单个工具的调用结果。

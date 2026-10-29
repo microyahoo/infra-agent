@@ -15,7 +15,7 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
+	"github.com/microyahoo/infra-agent/internal/agent/llm"
 )
 
 // LLMConfig 是机器人使用的模型配置。

@@ -1,7 +1,7 @@
 package tools
 
 import (
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/internal/access"
 )
 
 // newRaw 把一次执行结果整理成证据材料。

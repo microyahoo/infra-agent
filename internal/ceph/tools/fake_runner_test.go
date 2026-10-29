@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/internal/access"
 )
 
 // fakeRunner 用预置响应模拟集群，使工具层测试不依赖真实机器。

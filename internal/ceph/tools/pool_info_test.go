@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
+	"github.com/microyahoo/infra-agent/internal/access"
 )
 
 const poolDFJSON = `{

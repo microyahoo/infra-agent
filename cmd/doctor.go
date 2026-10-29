@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/microyahoo/infra-agent/pkg/doctor"
-	"github.com/microyahoo/infra-agent/pkg/doctor/access"
-	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
+	"github.com/microyahoo/infra-agent/internal/access"
+	"github.com/microyahoo/infra-agent/internal/agent/llm"
 	"github.com/spf13/cobra"
 )
 
@@ -230,20 +230,6 @@ func openAgent(ctx context.Context, cluster *access.Cluster, model llm.ChatModel
 	}
 	return agent, nil
 }
-
-// snapshotRunner 把 access.Cluster 适配成工具层需要的 Runner。
-type snapshotRunner struct{ c *access.Cluster }
-
-func (r snapshotRunner) Run(ctx context.Context, node string, argv []string) (access.Output, error) {
-	return r.c.Run(ctx, node, argv)
-}
-func (r snapshotRunner) Capabilities(ctx context.Context, node string) access.Capabilities {
-	return r.c.Capabilities(ctx, node)
-}
-func (r snapshotRunner) Topology(ctx context.Context) (*access.Topology, error) {
-	return r.c.Topology(ctx)
-}
-func (r snapshotRunner) Nodes() []string { return r.c.Nodes() }
 
 // runDoctorDryRun 只做能力探测与拓扑发现，打印摘要后返回，不调用模型。
 func runDoctorDryRun(ctx context.Context, cluster *access.Cluster) error {

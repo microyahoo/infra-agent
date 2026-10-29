@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/microyahoo/infra-agent/pkg/feishu"
+	"github.com/microyahoo/infra-agent/internal/feishu"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

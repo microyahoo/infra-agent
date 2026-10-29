@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor/llm"
-	"github.com/microyahoo/infra-agent/pkg/doctor/loop"
-	"github.com/microyahoo/infra-agent/pkg/doctor/tools"
+	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/internal/evidence"
+	"github.com/microyahoo/infra-agent/internal/ceph/tools"
 )
 
 // scriptedModel 按脚本返回预设回复。
@@ -246,7 +246,7 @@ func TestAgentPromptCarriesRecentHealthEvents(t *testing.T) {
 // 会把 ceph_status / ceph_health 再跑一遍，用户看到的就是"没啥变化"。
 func TestSnapshotEvidenceIsSeededAndAdvertised(t *testing.T) {
 	// 真实路径里 CollectSnapshot 会给它们编号。
-	seed := []loop.Evidence{
+	seed := []evidence.Evidence{
 		{ID: "ev-001", Tool: "snapshot:ceph_status", Command: "ceph status -f json", Summary: "HEALTH_WARN"},
 		{ID: "ev-002", Tool: "snapshot:ceph_health", Command: "ceph health detail", Summary: "Slow OSD heartbeats"},
 	}
