@@ -425,15 +425,28 @@ func TestAPIKeyFromEnv(t *testing.T) {
 	}
 }
 
-func TestEnvPrefixIsIsolated(t *testing.T) {
-	// 确保不会误读其它工具的 OPENAI_API_KEY 之类变量。
-	t.Setenv("OPENAI_API_KEY", "sk-someone-else")
+func TestDefaultAPIKeyEnvIsHonored(t *testing.T) {
+	// api_key_env 的默认值就是 OPENAI_API_KEY，因此它应该被读取。
+	t.Setenv("OPENAI_API_KEY", "sk-from-default-env")
 	cfg, err := Load(New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.LLM.APIKey != "" {
-		t.Errorf("must not read unrelated env vars: got %q", cfg.LLM.APIKey)
+	if cfg.LLM.APIKey != "sk-from-default-env" {
+		t.Errorf("api key from api_key_env: got %q", cfg.LLM.APIKey)
+	}
+}
+
+func TestExplicitAPIKeyEnvWins(t *testing.T) {
+	// INFRA_AGENT_LLM_API_KEY 比 api_key_env 指向的变量优先。
+	t.Setenv("OPENAI_API_KEY", "sk-default")
+	t.Setenv("INFRA_AGENT_LLM_API_KEY", "sk-explicit")
+	cfg, err := Load(New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.APIKey != "sk-explicit" {
+		t.Errorf("explicit env should win: got %q", cfg.LLM.APIKey)
 	}
 }
 ```
@@ -715,9 +728,7 @@ import (
 go test ./internal/config/ -v
 ```
 
-Expected: 4 个测试全部 PASS。
-
-如果 `TestEnvPrefixIsIsolated` 失败，说明 `v.AutomaticEnv()` 在没有 bind 的情况下读到了 `OPENAI_API_KEY`；此时只保留显式 `BindEnv`，并删除 `AutomaticEnv` 与 `SetEnvPrefix`/`SetEnvKeyReplacer` 三行。
+Expected: 5 个测试全部 PASS（`TestLoadPrecedence`、`TestPickFallsBackToDefault`、`TestAPIKeyFromEnv`、`TestDefaultAPIKeyEnvIsHonored`、`TestExplicitAPIKeyEnvWins`）。
 
 - [ ] **Step 7: 让 `cmd/root.go` 使用 `config.New()`**
 
