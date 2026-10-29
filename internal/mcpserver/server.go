@@ -65,7 +65,7 @@ func handlerFor(p Provider, name string) mcp.ToolHandler {
 			payload["data"] = res.Data
 		}
 		if len(res.Hints) > 0 {
-			payload["hints"] = res.Hints
+			payload["facts"] = res.Hints
 		}
 		b, err := json.Marshal(payload)
 		if err != nil {
