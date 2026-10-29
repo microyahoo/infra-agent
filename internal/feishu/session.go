@@ -7,21 +7,10 @@ import (
 	"time"
 
 	"github.com/microyahoo/infra-agent/internal/agent"
-	"github.com/microyahoo/infra-agent/internal/config"
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/internal/config"
 	"github.com/microyahoo/infra-agent/internal/session"
 )
-
-// ClusterConfig 描述机器人可以访问的一套存储集群。
-type ClusterConfig struct {
-	Name           string
-	Host           string
-	Port           int
-	User           string
-	PrivateKeyPath string
-	Password       string
-	KnownHostsPath string
-}
 
 // SessionManager 按群（chat_id）维护诊断会话。
 //
@@ -55,45 +44,33 @@ func (m *SessionManager) get(ctx context.Context, chatID, clusterName string) (*
 	}
 	m.mu.Unlock()
 
-	cc, ok := m.cfg.clusterByName(clusterName)
-	if !ok {
-		return nil, fmt.Errorf("没有名为 %q 的集群配置", clusterName)
-	}
-
-	cl := config.Cluster{
-		Host:           cc.Host,
-		Port:           cc.Port,
-		User:           cc.User,
-		PrivateKeyPath: cc.PrivateKeyPath,
-		Password:       cc.Password,
-		KnownHostsPath: cc.KnownHostsPath,
+	cl, err := m.cfg.cluster(clusterName)
+	if err != nil {
+		return nil, err
 	}
 
 	sess, err := session.Open(ctx, session.Options{
 		Cluster:         cl,
-		CollectSnapshot: true,
+		Policy:          m.cfg.Policy,
 		SourceDir:       m.cfg.SourceDir,
+		CollectSnapshot: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("接入集群 %s 失败: %w", cc.Name, err)
+		return nil, fmt.Errorf("接入集群 %s 失败: %w", clusterName, err)
 	}
 
-	ag := sess.NewAgent(m.cfg.newModel(), config.Loop{
-		MaxRounds:        m.cfg.MaxRounds,
-		MaxCallsPerRound: m.cfg.MaxCallsPerRound,
-		MaxToolCalls:     m.cfg.MaxCallsPerTurn,
-	})
+	ag := sess.NewAgent(m.cfg.newModel(), m.cfg.Loop)
 
 	e := &sessionEntry{agent: ag, sess: sess, clusterID: clusterName, lastUsed: time.Now()}
 	m.mu.Lock()
 	// 若同名会话在并发时已被建好，保留先建的那个
 	if old, ok := m.entries[chatID]; ok && old.clusterID == clusterName {
 		m.mu.Unlock()
-		sess.Close()
+		_ = sess.Close()
 		return old, nil
 	}
 	if old, ok := m.entries[chatID]; ok {
-		old.sess.Close()
+		_ = old.sess.Close()
 	}
 	m.entries[chatID] = e
 	m.mu.Unlock()
@@ -116,7 +93,7 @@ func (m *SessionManager) cleanupIdle(idle time.Duration) {
 	}
 	m.mu.Unlock()
 	for _, e := range dead {
-		e.sess.Close()
+		_ = e.sess.Close()
 	}
 }
 
@@ -130,11 +107,11 @@ func (m *SessionManager) Close() {
 	m.entries = map[string]*sessionEntry{}
 	m.mu.Unlock()
 	for _, e := range all {
-		e.sess.Close()
+		_ = e.sess.Close()
 	}
 }
 
-// modelFactory 便于测试替换。
+// newModel 便于测试替换。
 func (c Config) newModel() llm.ChatModel {
 	if c.NewModel != nil {
 		return c.NewModel()
@@ -148,13 +125,23 @@ func (c Config) newModel() llm.ChatModel {
 	})
 }
 
-// clusterByName 返回指定集群，空名时用默认集群。
-func (c Config) clusterByName(name string) (ClusterConfig, bool) {
+// cluster 返回指定集群，空名时用默认集群。
+func (c Config) cluster(name string) (config.Cluster, error) {
 	if name == "" {
-		return c.Cluster, c.Cluster.Host != ""
+		name = c.DefaultCluster
 	}
-	if cc, ok := c.Clusters[name]; ok {
-		return cc, true
+	if name == "" {
+		// single-cluster shortcut
+		if len(c.Clusters) == 1 {
+			for _, cl := range c.Clusters {
+				return cl, nil
+			}
+		}
+		return config.Cluster{}, fmt.Errorf("未配置默认集群")
 	}
-	return ClusterConfig{}, false
+	cl, ok := c.Clusters[name]
+	if !ok {
+		return config.Cluster{}, fmt.Errorf("没有名为 %q 的集群配置", name)
+	}
+	return cl, nil
 }

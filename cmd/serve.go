@@ -69,17 +69,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 // loadBotConfig 把统一配置映射成飞书机器人配置。
 func loadBotConfig(cfg config.Config) feishu.Config {
-	clusters := make(map[string]feishu.ClusterConfig, len(cfg.Clusters))
+	// Expand ~ in paths for every cluster.
+	clusters := make(map[string]config.Cluster, len(cfg.Clusters))
 	for name, cc := range cfg.Clusters {
-		clusters[name] = feishu.ClusterConfig{
-			Name:           name,
-			Host:           cc.Host,
-			Port:           cc.Port,
-			User:           cc.User,
-			PrivateKeyPath: config.ExpandHome(cc.PrivateKeyPath),
-			Password:       cc.Password,
-			KnownHostsPath: config.ExpandHome(cc.KnownHostsPath),
-		}
+		cc.PrivateKeyPath = config.ExpandHome(cc.PrivateKeyPath)
+		cc.KnownHostsPath = config.ExpandHome(cc.KnownHostsPath)
+		clusters[name] = cc
 	}
 
 	name := cfg.Feishu.DefaultCluster
@@ -92,8 +87,8 @@ func loadBotConfig(cfg config.Config) feishu.Config {
 		AppSecret:         cfg.Feishu.AppSecret,
 		VerificationToken: cfg.Feishu.VerificationToken,
 		EncryptKey:        cfg.Feishu.EncryptKey,
-		Cluster:           clusters[name],
 		Clusters:          clusters,
+		DefaultCluster:    name,
 		ChatClusters:      cfg.Feishu.ChatClusters,
 		LLM: feishu.LLMConfig{
 			BaseURL:    cfg.LLM.BaseURL,
@@ -102,10 +97,9 @@ func loadBotConfig(cfg config.Config) feishu.Config {
 			MaxTokens:  cfg.LLM.MaxTokens,
 			MaxRetries: cfg.LLM.MaxRetries,
 		},
-		SourceDir:        cfg.Ceph.SourceDir,
-		MaxRounds:        cfg.Loop.MaxRounds,
-		MaxCallsPerRound: cfg.Loop.MaxCallsPerRound,
-		MaxCallsPerTurn:  cfg.Loop.MaxToolCalls,
-		IdleTimeout:      time.Duration(cfg.Feishu.IdleTimeoutMinutes) * time.Minute,
+		Policy:      cfg.Policy,
+		SourceDir:   cfg.Ceph.SourceDir,
+		Loop:        cfg.Loop,
+		IdleTimeout: time.Duration(cfg.Feishu.IdleTimeoutMinutes) * time.Minute,
 	}
 }

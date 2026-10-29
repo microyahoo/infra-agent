@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/microyahoo/infra-agent/internal/config"
 )
 
 func TestExtractText(t *testing.T) {
@@ -45,9 +47,9 @@ func TestMarkSeenDeduplicates(t *testing.T) {
 // 群绑定优先：同一个群固定查同一套集群。
 func TestClusterForChat(t *testing.T) {
 	b := &Bot{cfg: Config{
-		Clusters: map[string]ClusterConfig{
-			"prod": {Name: "prod", Host: "10.0.0.1"},
-			"test": {Name: "test", Host: "10.0.0.2"},
+		Clusters: map[string]config.Cluster{
+			"prod": {Host: "10.0.0.1"},
+			"test": {Host: "10.0.0.2"},
 		},
 		ChatClusters: map[string]string{"chat-1": "prod"},
 	}}
@@ -102,7 +104,7 @@ func TestNewRequiresCredentials(t *testing.T) {
 func TestNewDefaultsIdleTimeout(t *testing.T) {
 	b, err := New(Config{
 		AppID: "a", AppSecret: "b",
-		Cluster: ClusterConfig{Name: "c", Host: "10.0.0.1"},
+		Clusters: map[string]config.Cluster{"c": {Host: "10.0.0.1"}},
 	})
 	if err != nil {
 		t.Fatal(err)

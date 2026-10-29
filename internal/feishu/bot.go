@@ -16,6 +16,7 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/internal/config"
 )
 
 // LLMConfig 是机器人使用的模型配置。
@@ -35,9 +36,9 @@ type Config struct {
 	VerificationToken string
 	EncryptKey        string
 
-	// Cluster 是默认集群；Clusters 按名称提供多套集群。
-	Cluster  ClusterConfig
-	Clusters map[string]ClusterConfig
+	// Clusters 是可访问的集群集合；DefaultCluster 决定默认查哪套。
+	Clusters       map[string]config.Cluster
+	DefaultCluster string
 
 	// ChatClusters 指定某个群默认查哪套集群（chat_id → 集群名）。
 	ChatClusters map[string]string
@@ -45,11 +46,10 @@ type Config struct {
 	LLM      LLMConfig
 	NewModel func() llm.ChatModel // 测试注入
 
-	SourceDir        string
-	MaxRounds        int
-	MaxCallsPerRound int
-	MaxCallsPerTurn  int
-	IdleTimeout      time.Duration
+	Policy    config.Policy
+	SourceDir string
+	Loop      config.Loop
+	IdleTimeout time.Duration
 }
 
 // Bot 是飞书长连接机器人：在群里被 @ 时，按消息内容调查集群并回复。
@@ -67,7 +67,7 @@ func New(cfg Config) (*Bot, error) {
 	if cfg.AppID == "" || cfg.AppSecret == "" {
 		return nil, fmt.Errorf("缺少 app_id / app_secret")
 	}
-	if cfg.Cluster.Host == "" && len(cfg.Clusters) == 0 {
+	if len(cfg.Clusters) == 0 {
 		return nil, fmt.Errorf("没有任何集群配置")
 	}
 	if cfg.IdleTimeout <= 0 {
