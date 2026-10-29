@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
-	"github.com/microyahoo/infra-agent/internal/evidence"
 	"github.com/microyahoo/infra-agent/internal/ceph/tools"
+	"github.com/microyahoo/infra-agent/internal/evidence"
 )
 
 // scriptedModel 按脚本返回预设回复。

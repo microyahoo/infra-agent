@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor"
 	"github.com/microyahoo/infra-agent/internal/access"
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/pkg/doctor"
 	"github.com/spf13/cobra"
 )
 

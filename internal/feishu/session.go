@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/microyahoo/infra-agent/pkg/doctor"
 	"github.com/microyahoo/infra-agent/internal/access"
 	"github.com/microyahoo/infra-agent/internal/agent/llm"
+	"github.com/microyahoo/infra-agent/pkg/doctor"
 )
 
 // ClusterConfig 描述机器人可以访问的一套存储集群。
