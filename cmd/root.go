@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/microyahoo/infra-agent/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -33,25 +34,19 @@ func init() {
 
 // initConfig 读取配置文件和环境变量
 func initConfig() {
+	v := viper.GetViper()
+	config.Apply(v)
 	if cfgFile != "" {
-		// 使用指定的配置文件
-		viper.SetConfigFile(cfgFile)
+		v.SetConfigFile(cfgFile)
 	} else {
-		// 查找主目录
 		home, err := os.UserHomeDir()
 		cobra.CheckErr(err)
-
-		// 在主目录中搜索 .infra-agent.yaml 配置文件
-		viper.AddConfigPath(home)
-		viper.AddConfigPath(".")
-		viper.SetConfigType("yaml")
-		viper.SetConfigName(".infra-agent")
+		v.AddConfigPath(home)
+		v.AddConfigPath(".")
+		v.SetConfigType("yaml")
+		v.SetConfigName(".infra-agent")
 	}
-
-	viper.AutomaticEnv() // 读取匹配的环境变量
-
-	// 如果找到配置文件，读取它
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "使用配置文件:", viper.ConfigFileUsed())
+	if err := v.ReadInConfig(); err == nil {
+		fmt.Fprintln(os.Stderr, "使用配置文件:", v.ConfigFileUsed())
 	}
 }

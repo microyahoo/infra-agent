@@ -1,224 +1,129 @@
 # ============================================================================
-# infra-agent doctor 配置文件示例
+# infra-agent 配置示例
 #
-# 用法：
-#   infra-agent doctor --config ~/.infra-agent.yaml --host 10.0.0.1
-#   或把本文件复制为 ~/.infra-agent.yaml（默认会自动读取）
-#
-# 优先级：命令行参数 > 本文件 > 内置默认值
-# 因此本文件里的值都可以被命令行临时覆盖，
-# 例如 `--max-rounds 40` 会盖掉这里的 loop.max_rounds。
+# 优先级：命令行 > 环境变量 > 本文件 > 内置默认值
+# 复制为 ~/.infra-agent.yaml 即可被自动读取。
 # ============================================================================
 
-doctor:
-  # --------------------------------------------------------------------------
-  # SSH 接入
-  # --------------------------------------------------------------------------
-  ssh:
-    # 首节点端口
-    port: 22
-    # 登录用户
-    user: root
+# 默认使用哪套集群。doctor / mcp / serve 都可以用 --cluster 临时覆盖。
+default_cluster: stor-01
 
-    # 认证方式二选一，私钥优先。
-    # 支持 ~ 展开，但不要把生产私钥提交进版本库。
+# 可接入的集群。一套集群 = 一个 SSH 入口节点，其余节点由它跳转。
+clusters:
+  stor-01:
+    host: 10.3.14.48
+    port: 22
+    user: root
+    # 认证二选一，私钥优先。不要把生产私钥提交进版本库。
     private_key: ~/.ssh/id_rsa
     # password: ""
-
-    # 提供后即启用严格的主机键校验（推荐）。
-    # 留空则退回 TOFU，并在报告里标注"本次连接未校验主机身份"。
+    # 配置后启用严格主机键校验；留空退回 TOFU，并在诊断结果里标注。
     known_hosts: ~/.ssh/known_hosts
-
-    # 诊断命令超时（秒）。
-    # 故障集群的 ceph -s 可能卡住，不要设得太短；
-    # 超时本身会被当作"mon 无响应"这类证据记录。
+    # 诊断命令超时（秒）。故障集群的 ceph -s 可能卡住，不要设得太短。
     command_timeout: 30
-
     # 能力探测与拓扑发现的单条命令超时（秒）。
-    # 这些命令本该秒回，设短一点可以让不可达的探测快速失败。
     probe_timeout: 8
 
-  # --------------------------------------------------------------------------
-  # 模型（OpenAI 兼容接口）
-  # --------------------------------------------------------------------------
+  # stor-02:
+  #   host: 10.4.1.10
+  #   user: root
+  #   private_key: ~/.ssh/id_rsa
+
+# 模型（OpenAI 兼容接口）
+llm:
+  model: gpt-4o
+  # 中转站填它自己的地址，不要带 /chat/completions。
+  base_url: ""
+  # 建议留空，改用环境变量 INFRA_AGENT_LLM_API_KEY。
+  api_key: ""
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  # 单次回复上限。多数中转站默认值很小，容易把结论截断，不建议设 0。
+  max_tokens: 8192
+  timeout: 120
+  # -1 = 内置默认（2 次）；0 = 不重试。429/5xx 重试，4xx 不重试。
+  max_retries: -1
+
+# 内置调查循环预算。仅 doctor / serve 使用。
+loop:
+  # 一轮 = 一次模型调用。体检 3-5 轮，复杂性能问题 10-20 轮。
+  max_rounds: 20
+  max_tool_calls: 60
+  # 单轮并行工具调用上限。设 1-2 才能保证"看一步走一步"。
+  max_calls_per_round: 2
+
+# 只读策略
+policy:
+  # 额外允许执行的只读程序。变更类命令始终被拒绝。
+  extra_binaries: []
+
+# Ceph 专项
+ceph:
+  # 本地 Ceph 源码目录，供 source_lookup 使用。留空则该工具不可用。
+  source_dir: ""
+
+# MCP server（infra-agent mcp）
+mcp:
+  # HTTP 模式监听地址；stdio 模式忽略。
+  listen: 127.0.0.1:9100
+  # HTTP 模式必填。等价于把集群只读权限放到网络上，不要留空。
+  token: ""
+  # 该进程绑定哪套集群。留空用 default_cluster。
+  cluster: ""
+
+# 飞书机器人（infra-agent serve）
+feishu:
+  app_id: ""
+  app_secret: ""
+  # 长连接模式不需要下列两项。
+  verification_token: ""
+  encrypt_key: ""
+  # 该机器人默认查哪套集群。留空用 default_cluster。
+  default_cluster: ""
+  # 群 → 集群绑定。键是 chat_id。
+  chat_clusters: {}
+    # oc_xxxxxxxxxxxxxxxx: stor-01
+  # 会话空闲多久回收 SSH 连接（分钟）。
+  idle_timeout_minutes: 30
+
+# 运行行为
+run:
+  # 总超时（秒），覆盖连接、快照、全部调查轮次。
+  timeout: 600
+  dry_run: false
+  self_check: false
+  interactive: true
+
+# ============================================================================
+# doctor 命令的旧版配置键（保持兼容，直到 Task 5 完成迁移）
+# ============================================================================
+doctor:
+  ssh:
+    port: 22
+    user: root
+    private_key: ~/.ssh/id_rsa
+    known_hosts: ~/.ssh/known_hosts
+    command_timeout: 30
+    probe_timeout: 8
   llm:
-    # 模型名。中转站通常要写它自己的模型别名。
     model: gpt-4o
-
-    # 接口地址。留空则用 OpenAI 官方；用中转站时填中转地址。
-    # 注意 base_url 不需要带 /chat/completions，程序会自己拼。
     base_url: ""
-
-    # API Key 的两种来源，二选一：
-    #   1) 本字段直接写（不建议，配置文件容易被提交）
-    #   2) 留空，改用下面的环境变量名
     api_key: ""
     api_key_env: OPENAI_API_KEY
-
-    # 采样温度。诊断场景建议 0~0.3，越低结论越稳定。
     temperature: 0.2
-
-    # 单次模型回复的最大 token 数。
-    #
-    # 这是"模型这一次说多少话"的上限，不是上下文窗口：
-    # 工具输出再长也由上下文压缩控制，与本项无关。
-    #
-    # 设为 0 表示不发送该字段，交给服务端决定。多数中转站/vLLM 的
-    # 默认值很小（16~256），容易把结论 JSON 截断，因此不建议设 0。
-    # 被截断时程序会识别 finish_reason=length 并要求模型精简重试，
-    # 但反复截断会白白消耗轮次预算。
     max_tokens: 8192
-
-    # 单次请求超时（秒）。长上下文 + 工具调用可能比较慢。
     timeout: 120
-
-    # 失败重试次数。
-    # -1 = 使用内置默认值（2 次）
-    #  0 = 不重试
-    # 遇到 429 / 5xx 会自动重试，4xx 不重试。
     max_retries: -1
-
-  # --------------------------------------------------------------------------
-  # 调查循环预算
-  # --------------------------------------------------------------------------
   loop:
-    # 最大调查轮数。一轮 = 一次模型调用。
-    # 体检通常 3-5 轮；复杂性能问题 10-20 轮。
     max_rounds: 20
-
-    # 工具调用总次数上限。防止模型反复查询把成本拉高。
     max_tool_calls: 60
-
-    # 单个工具的最大调用次数，防止死磕同一个工具。
     max_per_tool: 5
-
-    # 单轮并行的工具调用上限。
-    # 设为 2 意味着模型一次最多同时查两处，必须看完结果再决定下一步——
-    # 避免"一上来把所有命令都跑一遍"。想让模型查得更快可以调大，
-    # 但会明显削弱"先假设、再定点验证"的调查性。
     max_calls_per_round: 2
-
-  # --------------------------------------------------------------------------
-  # 只读策略
-  # --------------------------------------------------------------------------
   policy:
-    # 额外允许执行的只读程序。
-    # 内置已包含 ceph / kubectl / iostat / smartctl / journalctl / tc 等。
-    # 换别的存储系统时，在这里补上它自己的只读命令。
-    # 变更类命令（写、删除、重启、改配置）始终被拒绝，不受本项影响。
     extra_binaries: []
-      # - juicefs
-      # - redis-cli
-
-  # --------------------------------------------------------------------------
-  # Ceph 相关
-  # --------------------------------------------------------------------------
   ceph:
-    # 本地 Ceph 源码目录，供 ceph_source_lookup 工具使用。
-    # 指向按版本分目录的内网源码镜像，例如：
-    #   /data/ceph-src/
-    #     v18.2.4/
-    #     v16.2.14/
-    # 留空则该工具不可用（不会影响其余诊断）。
     source_dir: ""
-
-  # --------------------------------------------------------------------------
-  # 运行行为
-  # --------------------------------------------------------------------------
-  # 总超时（秒），覆盖连接、快照、全部调查轮次与报告生成
   timeout: 600
-
-  # 仅连接并探测能力与拓扑，不调用模型（不消耗 token）
   dry_run: false
-
-  # 在真实集群上逐个运行诊断工具，验证解析是否正确（不调用模型）
   self_check: false
-
-  # 诊断结束后进入交互模式，可以继续追问
   interactive: false
-
-
-# ============================================================================
-# 下面是其它命令（analyze / patrol）的配置，保持原样即可
-# ============================================================================
-
-# Kubernetes 配置
-kubernetes:
-  kubeconfig: ""
-  namespace: ""
-  timeout: 30
-
-# AI 配置（analyze 命令使用，与上面的 doctor.llm 相互独立）
-ai:
-  provider: "openai"
-  enabled: true
-  anonymize: true
-
-  openai:
-    apiKey: "${OPENAI_API_KEY}"
-    model: "gpt-4"
-    baseURL: "https://api.openai.com/v1"
-    temperature: 0.7
-    maxTokens: 2000
-
-  anthropic:
-    apiKey: "${ANTHROPIC_API_KEY}"
-    model: "claude-3-sonnet-20240229"
-    baseURL: "https://api.anthropic.com"
-    maxTokens: 2000
-
-# 通知配置
-notifiers:
-  default: "feishu"
-  feishu:
-    enabled: true
-    webhookURL: "${FEISHU_WEBHOOK_URL}"
-    secret: "${FEISHU_SECRET}"
-
-# 巡检配置
-patrol:
-  enabled: false
-  interval: 30
-# ============================================================================
-# 飞书机器人（infra-agent serve）
-#
-# 在群里 @ 机器人提问，它会调用同一套诊断能力调查集群并回复。
-# 使用长连接接收事件，不需要公网 IP 或回调地址。
-#
-# 飞书开放平台配置步骤：
-#   1. 创建「自建应用」，记录 App ID / App Secret
-#   2. 添加「机器人」能力
-#   3. 事件订阅 → 选择「长连接」→ 添加事件 im.message.receive_v1
-#   4. 权限：im:message、im:message:send_as_bot
-#   5. 把机器人拉进群
-# ============================================================================
-feishu:
-  bot:
-    app_id: ""            # 或环境变量 FEISHU_APP_ID
-    app_secret: ""        # 或环境变量 FEISHU_APP_SECRET
-    # 长连接模式不需要下列两项，留空即可
-    verification_token: ""
-    encrypt_key: ""
-
-    # 默认查哪套集群（对应下面 clusters 的键名）
-    default_cluster: ""
-
-    # 群 → 集群绑定；不配则用 default_cluster
-    # chat_clusters:
-    #   oc_xxxxxxxxxxxxxxxx: "stor-01"
-
-    # 多套集群。每个群或每条消息（"集群名:问题"）指定查哪套
-    clusters: {}
-      # stor-01:
-      #   host: 10.3.14.48
-      #   port: 22
-      #   user: root
-      #   private_key: ~/.ssh/id_rsa
-      #   known_hosts: ~/.ssh/known_hosts
-      # stor-02:
-      #   host: 10.4.1.10
-      #   user: root
-      #   private_key: ~/.ssh/id_rsa
-
-    # 会话空闲多久回收 SSH 连接（分钟）
-    idle_timeout_minutes: 30

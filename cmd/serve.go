@@ -7,15 +7,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/microyahoo/infra-agent/internal/config"
 	"github.com/microyahoo/infra-agent/internal/feishu"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-)
-
-var (
-	serveAppID     string
-	serveAppSecret string
-	serveCluster   string
 )
 
 var serveCmd = &cobra.Command{
@@ -29,24 +24,33 @@ var serveCmd = &cobra.Command{
   · 事件订阅：接收消息 im.message.receive_v1（使用长连接）
   · 权限：im:message、im:message:send_as_bot
 
-集群与模型配置见配置文件的 feishu.bot 段。`,
+集群与模型配置见配置文件的 clusters 与 feishu 段。`,
 	RunE: runServe,
 }
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
 	f := serveCmd.Flags()
-	f.StringVar(&serveAppID, "app-id", "", "飞书应用 App ID")
-	f.StringVar(&serveAppSecret, "app-secret", "", "飞书应用 App Secret")
-	f.StringVar(&serveCluster, "cluster", "", "默认集群名（对应配置里的 clusters）")
+	f.String("app-id", "", "飞书应用 App ID")
+	f.String("app-secret", "", "飞书应用 App Secret")
+	f.String("cluster", "", "默认集群名（对应配置里的 clusters）")
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
-	cfg, err := loadBotConfig()
+	v := viper.GetViper()
+	if err := config.BindFlags(v, cmd.Flags(), map[string]string{
+		"app-id":     "feishu.app_id",
+		"app-secret": "feishu.app_secret",
+		"cluster":    "feishu.default_cluster",
+	}); err != nil {
+		return err
+	}
+	cfg, err := config.Load(v, nil)
 	if err != nil {
 		return err
 	}
-	bot, err := feishu.New(cfg)
+
+	bot, err := feishu.New(loadBotConfig(cfg))
 	if err != nil {
 		return err
 	}
@@ -63,94 +67,45 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	return err
 }
 
-// loadBotConfig 合并命令行与配置文件。
-func loadBotConfig() (feishu.Config, error) {
-	if serveAppID != "" {
-		viper.Set("feishu.bot.app_id", serveAppID)
-	}
-	if serveAppSecret != "" {
-		viper.Set("feishu.bot.app_secret", serveAppSecret)
-	}
-	// 也支持环境变量，避免把密钥写进文件
-	if v := os.Getenv("FEISHU_APP_ID"); v != "" && serveAppID == "" {
-		viper.Set("feishu.bot.app_id", v)
-	}
-	if v := os.Getenv("FEISHU_APP_SECRET"); v != "" && serveAppSecret == "" {
-		viper.Set("feishu.bot.app_secret", v)
-	}
-
-	cfg := feishu.Config{
-		AppID:             viper.GetString("feishu.bot.app_id"),
-		AppSecret:         viper.GetString("feishu.bot.app_secret"),
-		VerificationToken: viper.GetString("feishu.bot.verification_token"),
-		EncryptKey:        viper.GetString("feishu.bot.encrypt_key"),
-		Clusters:          map[string]feishu.ClusterConfig{},
-		ChatClusters:      map[string]string{},
-		SourceDir:         expandHome(viper.GetString("doctor.ceph.source_dir")),
-		MaxRounds:         viper.GetInt("doctor.loop.max_rounds"),
-		MaxCallsPerRound:  viper.GetInt("doctor.loop.max_calls_per_round"),
-		MaxCallsPerTurn:   viper.GetInt("doctor.loop.max_tool_calls"),
-		IdleTimeout:       time.Duration(viper.GetInt("feishu.bot.idle_timeout_minutes")) * time.Minute,
-	}
-
-	cfg.LLM = feishu.LLMConfig{
-		BaseURL:    viper.GetString("doctor.llm.base_url"),
-		APIKey:     viper.GetString("doctor.llm.api_key"),
-		Model:      viper.GetString("doctor.llm.model"),
-		MaxTokens:  viper.GetInt("doctor.llm.max_tokens"),
-		MaxRetries: viper.GetInt("doctor.llm.max_retries"),
-	}
-	if cfg.LLM.APIKey == "" {
-		cfg.LLM.APIKey = os.Getenv(viper.GetString("doctor.llm.api_key_env"))
-	}
-
-	// 默认集群
-	if serveCluster != "" {
-		viper.Set("feishu.bot.default_cluster", serveCluster)
-	}
-	defaultName := viper.GetString("feishu.bot.default_cluster")
-
-	clusters := viper.GetStringMap("feishu.bot.clusters")
-	for name := range clusters {
-		prefix := "feishu.bot.clusters." + name + "."
-		cc := feishu.ClusterConfig{
+// loadBotConfig 把统一配置映射成飞书机器人配置。
+func loadBotConfig(cfg config.Config) feishu.Config {
+	clusters := make(map[string]feishu.ClusterConfig, len(cfg.Clusters))
+	for name, cc := range cfg.Clusters {
+		clusters[name] = feishu.ClusterConfig{
 			Name:           name,
-			Host:           viper.GetString(prefix + "host"),
-			Port:           viper.GetInt(prefix + "port"),
-			User:           viper.GetString(prefix + "user"),
-			PrivateKeyPath: expandHome(viper.GetString(prefix + "private_key")),
-			Password:       viper.GetString(prefix + "password"),
-			KnownHostsPath: expandHome(viper.GetString(prefix + "known_hosts")),
-		}
-		if cc.Host == "" {
-			continue
-		}
-		cfg.Clusters[name] = cc
-		if defaultName == "" {
-			defaultName = name
-		}
-	}
-	if defaultName != "" {
-		if cc, ok := cfg.Clusters[defaultName]; ok {
-			cfg.Cluster = cc
-		}
-	}
-	if cfg.Cluster.Host == "" && len(cfg.Clusters) == 0 {
-		// 退回到 doctor.ssh 段，单集群场景常这么配
-		cfg.Cluster = feishu.ClusterConfig{
-			Name:           "default",
-			Host:           viper.GetString("doctor.ssh.host"),
-			Port:           viper.GetInt("doctor.ssh.port"),
-			User:           viper.GetString("doctor.ssh.user"),
-			PrivateKeyPath: expandHome(viper.GetString("doctor.ssh.private_key")),
-			KnownHostsPath: expandHome(viper.GetString("doctor.ssh.known_hosts")),
+			Host:           cc.Host,
+			Port:           cc.Port,
+			User:           cc.User,
+			PrivateKeyPath: config.ExpandHome(cc.PrivateKeyPath),
+			Password:       cc.Password,
+			KnownHostsPath: config.ExpandHome(cc.KnownHostsPath),
 		}
 	}
 
-	chatMap := viper.GetStringMapString("feishu.bot.chat_clusters")
-	for chat, cluster := range chatMap {
-		cfg.ChatClusters[chat] = cluster
+	name := cfg.Feishu.DefaultCluster
+	if name == "" {
+		name = cfg.DefaultCluster
 	}
 
-	return cfg, nil
+	return feishu.Config{
+		AppID:             cfg.Feishu.AppID,
+		AppSecret:         cfg.Feishu.AppSecret,
+		VerificationToken: cfg.Feishu.VerificationToken,
+		EncryptKey:        cfg.Feishu.EncryptKey,
+		Cluster:           clusters[name],
+		Clusters:          clusters,
+		ChatClusters:      cfg.Feishu.ChatClusters,
+		LLM: feishu.LLMConfig{
+			BaseURL:    cfg.LLM.BaseURL,
+			APIKey:     cfg.LLM.APIKey,
+			Model:      cfg.LLM.Model,
+			MaxTokens:  cfg.LLM.MaxTokens,
+			MaxRetries: cfg.LLM.MaxRetries,
+		},
+		SourceDir:        cfg.Ceph.SourceDir,
+		MaxRounds:        cfg.Loop.MaxRounds,
+		MaxCallsPerRound: cfg.Loop.MaxCallsPerRound,
+		MaxCallsPerTurn:  cfg.Loop.MaxToolCalls,
+		IdleTimeout:      time.Duration(cfg.Feishu.IdleTimeoutMinutes) * time.Minute,
+	}
 }
