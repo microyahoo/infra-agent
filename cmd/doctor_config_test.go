@@ -233,13 +233,13 @@ func TestExampleConfigIsValid(t *testing.T) {
 		t.Fatalf("example config does not parse: %v", err)
 	}
 	// 抽查几个关键键确实能被读到
-	if got := viper.GetString("doctor.llm.model"); got == "" {
-		t.Error("doctor.llm.model missing from example")
+	if got := viper.GetString("llm.model"); got == "" {
+		t.Error("llm.model missing from example")
 	}
-	if got := viper.GetInt("doctor.loop.max_rounds"); got == 0 {
-		t.Error("doctor.loop.max_rounds missing from example")
+	if got := viper.GetInt("loop.max_rounds"); got == 0 {
+		t.Error("loop.max_rounds missing from example")
 	}
-	if !strings.Contains(viper.GetString("doctor.ssh.private_key"), "id_rsa") {
-		t.Error("doctor.ssh.private_key missing from example")
+	if !strings.Contains(viper.GetString("clusters.stor-01.private_key"), "id_rsa") {
+		t.Error("clusters.stor-01.private_key missing from example")
 	}
 }

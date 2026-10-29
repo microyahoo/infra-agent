@@ -94,36 +94,3 @@ run:
   self_check: false
   interactive: true
 
-# ============================================================================
-# doctor 命令的旧版配置键（保持兼容，直到 Task 5 完成迁移）
-# ============================================================================
-doctor:
-  ssh:
-    port: 22
-    user: root
-    private_key: ~/.ssh/id_rsa
-    known_hosts: ~/.ssh/known_hosts
-    command_timeout: 30
-    probe_timeout: 8
-  llm:
-    model: gpt-4o
-    base_url: ""
-    api_key: ""
-    api_key_env: OPENAI_API_KEY
-    temperature: 0.2
-    max_tokens: 8192
-    timeout: 120
-    max_retries: -1
-  loop:
-    max_rounds: 20
-    max_tool_calls: 60
-    max_per_tool: 5
-    max_calls_per_round: 2
-  policy:
-    extra_binaries: []
-  ceph:
-    source_dir: ""
-  timeout: 600
-  dry_run: false
-  self_check: false
-  interactive: false
