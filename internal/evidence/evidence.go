@@ -17,7 +17,6 @@ import (
 // 从而保证报告中的事实均可溯源。
 type Evidence struct {
 	ID        string         `json:"id"`
-	Round     int            `json:"round"`
 	Tool      string         `json:"tool"`
 	Args      map[string]any `json:"args,omitempty"`
 	Node      string         `json:"node,omitempty"`
@@ -33,13 +32,11 @@ type Evidence struct {
 
 // Chain 是按插入顺序保存证据的线程安全证据链。
 type Chain struct {
-	mu      sync.RWMutex
-	items   []Evidence
-	nextID  int
-	byID    map[string]int      // ID -> items 下标，便于 O(1) 查找
-	calls   map[string]struct{} // 已执行过的调用 key，用于去重
-	round   int                 // 当前轮次
-	lastAdd int                 // 最近一次新增证据所在的轮次
+	mu     sync.RWMutex
+	items  []Evidence
+	nextID int
+	byID   map[string]int      // ID -> items 下标，便于 O(1) 查找
+	calls  map[string]struct{} // 已执行过的调用 key，用于去重
 }
 
 // NewChain 创建空证据链。
@@ -79,8 +76,6 @@ func (c *Chain) Add(e Evidence) Evidence {
 
 	c.byID[e.ID] = len(c.items)
 	c.items = append(c.items, e)
-
-	// 有新增证据说明本轮有进展，重置无进展计数。
 
 	// 若调用方显式传入了工具名，则同时视为已执行过的调用，避免重复执行。
 	if e.Tool != "" {
