@@ -56,12 +56,15 @@ func runMCP(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	cl, err := cfg.Pick(stringFlag(cmd.Flags(), "cluster"))
-	if err != nil {
-		return err
-	}
-
+	// 集群选择推迟到第一次工具调用：客户端可能只列工具、从不连接，
+	// 或者集群在启动瞬间不可达。配置错误以工具错误的形式返回，
+	// 而不是让整个 MCP server 起不来。
+	clusterName := stringFlag(cmd.Flags(), "cluster")
 	lazy := &session.Lazy{Open: func(ctx context.Context) (*session.Session, error) {
+		cl, err := cfg.Pick(clusterName)
+		if err != nil {
+			return nil, err
+		}
 		return session.Open(ctx, session.Options{
 			Cluster:   cl,
 			Policy:    cfg.Policy,
